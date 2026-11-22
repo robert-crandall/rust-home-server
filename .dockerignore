@@ -1,0 +1,10 @@
+.git
+.github
+target
+bin
+.bin
+web/node_modules
+web/build
+.env
+.env.*
+.DS_Store

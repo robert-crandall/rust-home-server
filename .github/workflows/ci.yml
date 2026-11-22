@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.x'
+      - name: Assert bunfig.toml forces the Bun runtime
+        working-directory: web
+        run: |
+          echo "node on PATH: $(command -v node || echo '(none - assertion is weaker here)')"
+          runtime=$(bun run --silent node -p "typeof Bun === 'undefined' ? 'NODE' : 'BUN'")
+          echo "bun run resolves node -> $runtime"
+          [ "$runtime" = BUN ] || { echo "::error file=web/bunfig.toml::bun run built under $runtime, not Bun - web/bunfig.toml is not in force"; exit 1; }
+      - run: bun install --frozen-lockfile
+        working-directory: web
+      - run: bun run check
+        working-directory: web
+      - run: bun run test
+        working-directory: web
+      - run: bun run build
+        working-directory: web
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-build
+          path: web/build
+
+  rust:
+    runs-on: ubuntu-latest
+    needs: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-build
+          path: web/build
+      - name: Check the artifact landed at web/build/index.html
+        run: test -f web/build/index.html
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked --lib --bins
+
+  spec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.x'
+      - run: bun install --frozen-lockfile
+        working-directory: web
+      - run: make spec
+      - name: Check the committed contract is up to date
+        run: |
+          git diff --exit-code -- docs/openapi.json web/src/lib/api/schema.d.ts \
+            || { echo "::error::the API contract changed - run \`make spec\` and commit docs/openapi.json + web/src/lib/api/schema.d.ts"; exit 1; }
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: web
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rust_home_template_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-build
+          path: web/build
+      - name: Run database-backed integration tests
+        run: cargo test --locked --test integration -- --nocapture
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+          REQUIRE_TEST_DB: '1'
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

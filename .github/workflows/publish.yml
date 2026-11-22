@@ -1,0 +1,138 @@
+name: Publish
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      promote_main: ${{ steps.plan.outputs.promote_main }}
+      ref: ${{ steps.plan.outputs.ref }}
+      image: ${{ steps.plan.outputs.image }}
+      sha_tag: ${{ steps.plan.outputs.sha_tag }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the current tip of main
+        id: tip
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eo pipefail
+          sha=$(gh api "repos/${{ github.repository }}/branches/main" --jq .commit.sha)
+          test -n "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Decide what to publish
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          GITHUB_REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          BRANCH_TIP: ${{ steps.tip.outputs.sha }}
+        run: |
+          set -eo pipefail
+          scripts/ci/publish-plan.sh | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    needs: guard
+    if: needs.guard.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.guard.outputs.ref }}
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ needs.guard.outputs.image }}:${{ needs.guard.outputs.version || needs.guard.outputs.sha_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.guard.outputs.ref }}
+            org.opencontainers.image.version=${{ needs.guard.outputs.version || needs.guard.outputs.sha_tag }}
+
+  promote:
+    needs: [guard, build]
+    if: needs.guard.outputs.promote_main == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: publish-promote-main
+      cancel-in-progress: false
+    steps:
+      - uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Move :main to the freshly published image
+        id: promote
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ needs.guard.outputs.image }}
+          SHA_TAG: ${{ needs.guard.outputs.sha_tag }}
+          EXPECTED: ${{ needs.guard.outputs.ref }}
+        run: |
+          set -eo pipefail
+          tip=$(gh api "repos/${{ github.repository }}/branches/main" --jq .commit.sha)
+          test -n "$tip"
+          if [ "$tip" != "$EXPECTED" ]; then
+            msg="main moved to $tip while $EXPECTED was building; leaving :main alone. The newer commit's own publish run will move it."
+            echo "$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          docker buildx imagetools create -t "$IMAGE:main" "$IMAGE:$SHA_TAG"
+          echo "promoted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Tell Watchtower there is a new image
+        if: steps.promote.outputs.promoted == 'true'
+        continue-on-error: true
+        env:
+          WATCHTOWER_WEBHOOK_URL: ${{ secrets.WATCHTOWER_WEBHOOK_URL }}
+          WATCHTOWER_TOKEN: ${{ secrets.WATCHTOWER_TOKEN }}
+        run: |
+          if [ -z "$WATCHTOWER_WEBHOOK_URL" ]; then
+            echo "WATCHTOWER_WEBHOOK_URL is unset - nothing to notify. Published image stands."
+            exit 0
+          fi
+          auth=()
+          if [ -n "$WATCHTOWER_TOKEN" ]; then
+            auth=(-H "Authorization: Bearer $WATCHTOWER_TOKEN")
+          fi
+          curl -fsS -X POST --max-time 5 "${auth[@]}" "$WATCHTOWER_WEBHOOK_URL"

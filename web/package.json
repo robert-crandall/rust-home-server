@@ -1,0 +1,28 @@
+{
+  "name": "rust-home-template-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit",
+    "gen:api": "openapi-typescript ../docs/openapi.json -o src/lib/api/schema.d.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.17.0",
+    "solid-js": "2.0.0-rc.21",
+    "@solidjs/web": "2.0.0-rc.21"
+  },
+  "devDependencies": {
+    "@solidjs/diagnostics": "2.0.0-rc.21",
+    "@solidjs/vite-plugin": "3.0.0-next.57",
+    "jsdom": "30.0.1",
+    "openapi-typescript": "^7.13.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}

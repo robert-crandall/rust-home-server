@@ -1,0 +1,57 @@
+[package]
+name = "rust-home-template"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+default-run = "rust-home-template"
+
+[lib]
+name = "app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rust-home-template"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "openapi"
+path = "src/bin/openapi.rs"
+
+[[bin]]
+name = "rust-home-template-mcp"
+path = "src/bin/mcp.rs"
+
+[dependencies]
+argon2 = { version = "0.5", features = ["std"] }
+axum = { version = "0.8", features = ["macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+hex = "0.4"
+mime_guess = "2"
+reqwest = { version = "0.12", default-features = false, features = ["cookies", "json", "rustls-tls"] }
+rmcp = { version = "3.11", features = ["macros", "server", "transport-io"] }
+rpassword = "7"
+rust-embed = "8"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio-rustls", "uuid"] }
+subtle = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+utoipa = { version = "6", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-axum = "0.3"
+uuid = { version = "1", features = ["serde", "v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+# Keep line-table debuginfo on host proc-macros/build-scripts during release builds so
+# newer Apple ld/dyld versions do not emit a mis-aligned Mach-O LINKEDIT string pool
+# for libsqlx_macros.dylib (zero effect on the final release binaries).
+[profile.release.build-override]
+debug = 1
+

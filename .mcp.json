@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "rust-home-template": { "command": "rust-home-template-mcp", "args": ["serve"] }
+  }
+}

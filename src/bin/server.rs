@@ -1,0 +1,191 @@
+use std::process::ExitCode;
+use std::time::Duration;
+
+use app::config::{Config, healthcheck_url_from_env};
+use app::db::connect_and_migrate;
+use app::routes::{AppState, ErrorBody, build_router};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::{HeaderValue, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
+use rust_embed::Embed;
+use tokio::net::TcpListener;
+use tracing_subscriber::EnvFilter;
+
+#[derive(Embed)]
+#[folder = "web/build"]
+struct WebAssets;
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    if matches!(std::env::args().nth(1).as_deref(), Some("healthcheck")) {
+        return run_healthcheck().await;
+    }
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    let cfg = match Config::from_env() {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!("configuration error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let pool = match connect_and_migrate(&cfg.database_url).await {
+        Ok(pool) => pool,
+        Err(err) => {
+            eprintln!("database startup failed: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let app = build_router(AppState {
+        pool,
+        secure_cookies: cfg.secure_cookies,
+        allow_open_registration: cfg.allow_open_registration,
+    })
+    .fallback(serve_spa);
+
+    let listener = match TcpListener::bind(cfg.listen_addr).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            eprintln!("failed to bind {}: {err}", cfg.listen_addr);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    tracing::info!(addr = %cfg.listen_addr, "rust-home-template server listening");
+
+    if let Err(err) = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+    {
+        eprintln!("server error: {err}");
+        return ExitCode::FAILURE;
+    }
+
+    ExitCode::SUCCESS
+}
+
+async fn run_healthcheck() -> ExitCode {
+    let url = match healthcheck_url_from_env() {
+        Ok(url) => url,
+        Err(err) => {
+            eprintln!("healthcheck config error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .build()
+    {
+        Ok(c) => c,
+        Err(err) => {
+            eprintln!("healthcheck client error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => ExitCode::SUCCESS,
+        Ok(resp) => {
+            eprintln!("healthcheck returned HTTP {}", resp.status());
+            ExitCode::FAILURE
+        }
+        Err(err) => {
+            eprintln!("healthcheck failed for {url}: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn serve_spa(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+
+    if path == "api" || path.starts_with("api/") {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(ErrorBody {
+                error: "not found".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if !path.is_empty()
+        && let Some(asset) = WebAssets::get(path)
+    {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        let cache = if path.starts_with("assets/") {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-cache"
+        };
+        return (
+            StatusCode::OK,
+            [
+                (
+                    CONTENT_TYPE,
+                    HeaderValue::from_str(mime.as_ref())
+                        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+                ),
+                (CACHE_CONTROL, HeaderValue::from_static(cache)),
+            ],
+            asset.data.into_owned(),
+        )
+            .into_response();
+    }
+
+    // Dotted paths that missed WebAssets are missing static files, not SPA routes.
+    if path.rsplit('/').next().is_some_and(|seg| seg.contains('.')) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    match WebAssets::get("index.html") {
+        Some(index) => (
+            StatusCode::OK,
+            [
+                (
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("text/html; charset=utf-8"),
+                ),
+                (CACHE_CONTROL, HeaderValue::from_static("no-cache")),
+            ],
+            index.data.into_owned(),
+        )
+            .into_response(),
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "frontend bundle not built (run `cd web && bun run build`)",
+        )
+            .into_response(),
+    }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut sigterm) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            sigterm.recv().await;
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
+}

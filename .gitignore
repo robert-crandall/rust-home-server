@@ -1,0 +1,9 @@
+/target
+/bin
+/.bin
+/web/node_modules
+/web/build
+.env
+.env.*
+!.env.example
+.DS_Store
