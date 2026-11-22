@@ -51,10 +51,9 @@ impl Config {
             .map(|v| v.trim())
             .filter(|v| !v.is_empty())
         {
-            // Default to open so multiple household members can create accounts
-            // on the LAN without extra setup; flip to false to lock registration
-            // once accounts exist.
-            None => true,
+            // Default to false so only the initial bootstrap account can register;
+            // set to true to allow open multi-user registration.
+            None => false,
             Some("true" | "1") => true,
             Some("false" | "0") => false,
             Some(other) => {
@@ -140,13 +139,13 @@ mod tests {
         );
         let cfg = Config::from_map(&vars).unwrap();
         assert!(!cfg.secure_cookies);
-        assert!(cfg.allow_open_registration);
+        assert!(!cfg.allow_open_registration);
 
         vars.insert("APP_ENV".into(), "production".into());
-        vars.insert("ALLOW_OPEN_REGISTRATION".into(), "false".into());
+        vars.insert("ALLOW_OPEN_REGISTRATION".into(), "true".into());
         let prod = Config::from_map(&vars).unwrap();
         assert!(prod.secure_cookies);
-        assert!(!prod.allow_open_registration);
+        assert!(prod.allow_open_registration);
 
         vars.insert("APP_ENV".into(), "prod".into());
         assert!(Config::from_map(&vars).is_err());

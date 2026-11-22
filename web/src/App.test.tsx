@@ -192,7 +192,7 @@ describe("Rust Home Server SPA foundation", () => {
     vi.restoreAllMocks();
   });
 
-  it("registers a household account and lands in the shared workspace", async () => {
+  it("registers an account and lands in the app shell", async () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     dispose = render(() => <App />, host);
@@ -202,13 +202,13 @@ describe("Rust Home Server SPA foundation", () => {
     });
 
     const toggle = Array.from(host.querySelectorAll("button")).find((btn) =>
-      btn.textContent?.includes("Create an account"),
+      btn.textContent?.includes("Need an account? Create one"),
     );
     expect(toggle).toBeDefined();
     toggle!.click();
     flush();
 
-    expect(host.querySelector("h1")?.textContent).toBe("Create household account");
+    expect(host.querySelector("h1")?.textContent).toBe("Create account");
 
     setInputValue(host.querySelector("#auth-name") as HTMLInputElement, "Dad");
     setInputValue(

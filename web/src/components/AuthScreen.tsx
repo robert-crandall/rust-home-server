@@ -54,12 +54,12 @@ export function AuthScreen() {
             <span>Rust Home Server</span>
           </div>
           <h1 id="auth-heading">
-            {isRegister() ? "Create household account" : "Sign in"}
+            {isRegister() ? "Create account" : "Sign in"}
           </h1>
           <p>
             {isRegister()
-              ? "Create your login to join the shared household workspace."
-              : "Sign in to access your household workspace."}
+              ? "Create an account to get started."
+              : "Sign in to your account."}
           </p>
         </header>
 
@@ -137,7 +137,7 @@ export function AuthScreen() {
                   class="link-btn"
                   onClick={() => switchMode("register")}
                 >
-                  Need a household login? Create an account
+                  Need an account? Create one
                 </button>
               }
             >
@@ -154,7 +154,7 @@ export function AuthScreen() {
       </section>
 
       <footer class="auth-footer">
-        <span>Self-hosted household workspace</span>
+        <span>Self-hosted homelab portal</span>
         <ThemePicker />
       </footer>
     </main>

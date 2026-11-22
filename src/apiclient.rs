@@ -206,23 +206,6 @@ impl ApiClient {
             .await
             .map_err(|err| format!("invalid /api/auth/me response: {err}"))
     }
-
-    pub async fn list_users(&self) -> Result<Vec<User>, String> {
-        let resp = self
-            .http
-            .get(format!("{}/api/users", self.base_url))
-            .send()
-            .await
-            .map_err(|err| format!("request to /api/users failed: {err}"))?;
-
-        if !resp.status().is_success() {
-            return Err(read_api_error(resp).await);
-        }
-
-        resp.json::<Vec<User>>()
-            .await
-            .map_err(|err| format!("invalid /api/users response: {err}"))
-    }
 }
 
 pub async fn mint_token_via_login(
