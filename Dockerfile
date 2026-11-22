@@ -14,7 +14,7 @@ COPY web/ ./
 RUN bun run build
 
 # --- 2. Build the Rust server binary ---
-FROM rust:1.95-bookworm AS rust-build
+FROM rust:1.100-bookworm AS rust-build
 WORKDIR /src
 
 COPY Cargo.toml Cargo.lock ./
