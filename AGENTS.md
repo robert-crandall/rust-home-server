@@ -10,10 +10,9 @@ Guidance for AI coding agents working in `robert-crandall/rust-home-server`.
 - **MCP server**: `rust-home-server-mcp` (`rmcp` over local `stdio`), talking to the HTTP API using `~/.config/rust-home-server.json` (`MCP_APP_URL` / `MCP_APP_TOKEN` overrides).
 - **Frontend**: Solid `2.0` (`solid-js@2.0.0-rc.*`, `@solidjs/web`, `@solidjs/vite-plugin`), Vite `8`, Vitest `5`, Bun `1.3.x`, and `openapi-fetch` + `openapi-typescript`.
 
-## Household Authentication & Security Model
+## Authentication & Security Model
 
-- Multiple household users sign in with their own email + password accounts (`ALLOW_OPEN_REGISTRATION=true` by default; set `false` once household accounts exist to lock sign-ups).
-- `GET /api/users` and MCP `list_users` expose household member IDs and display names so domain tables can support shared household data, per-user targeting, or per-user state.
+- Registration defaults to first-account-only (`ALLOW_OPEN_REGISTRATION=false`, enforced under a Postgres transaction advisory lock); set `ALLOW_OPEN_REGISTRATION=true` for multi-user apps where each user registers their own account.
 - Browser mutations (`/api/...` unsafe methods) are protected by `HttpOnly; SameSite=Lax` cookies plus `Sec-Fetch-Site` / `Origin` CSRF checks in `src/auth.rs`.
 - Bearer token callers (`Authorization: Bearer pat_<uuid>_<secret>`) bypass cookie fallback completely: if an `Authorization` header is present, cookies are never consulted.
 

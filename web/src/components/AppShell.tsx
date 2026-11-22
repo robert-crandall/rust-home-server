@@ -141,12 +141,11 @@ export function AppShell(props: { user: User }) {
         </Show>
 
         <section class="surface-card" aria-labelledby="focus-heading">
-          <span class="eyebrow">Household workspace</span>
+          <span class="eyebrow">Homelab starter</span>
           <h1 id="focus-heading">Ready for Rust Home Server</h1>
           <p class="lead-copy">
-            Signed in as <strong>{displayName()}</strong>. Household accounts
-            share one workspace while keeping per-user authentication and API
-            tokens independent.
+            Signed in as <strong>{displayName()}</strong>. Replace this view with
+            your application features.
           </p>
         </section>
 

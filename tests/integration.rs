@@ -606,7 +606,7 @@ async fn multi_user_auth_csrf_and_tokens_flow() {
         .unwrap();
     assert_eq!(app_info, json!({ "registrationOpen": true }));
 
-    // 2. Register two household users; duplicate email (case-insensitive) fails with 409
+    // 2. Register two users; duplicate email (case-insensitive) fails with 409
     let reg_a = client_a
         .post(format!("{base_url}/api/auth/register"))
         .json(&json!({
@@ -701,10 +701,10 @@ async fn multi_user_auth_csrf_and_tokens_flow() {
     let raw_token = minted["token"].as_str().unwrap().to_string();
     assert!(raw_token.starts_with("pat_"));
 
-    // Bearer token authenticates /api/auth/me without cookies
+    // Bearer token authenticates /api/auth/me without cookies (including case-insensitive scheme)
     let bearer_me = bare_client
         .get(format!("{base_url}/api/auth/me"))
-        .header(AUTHORIZATION, format!("Bearer {raw_token}"))
+        .header(AUTHORIZATION, format!("BEARER {raw_token}"))
         .send()
         .await
         .unwrap();
@@ -712,38 +712,13 @@ async fn multi_user_auth_csrf_and_tokens_flow() {
     let bearer_user: Value = bearer_me.json().await.unwrap();
     assert_eq!(bearer_user["email"], "leo@example.com");
 
-    // Household directory (/api/users) requires auth and works for both session cookies and PATs
-    let unauth_users = bare_client
-        .get(format!("{base_url}/api/users"))
+    // Unauthenticated /api/auth/me returns 401
+    let unauth_me = bare_client
+        .get(format!("{base_url}/api/auth/me"))
         .send()
         .await
         .unwrap();
-    assert_eq!(unauth_users.status(), StatusCode::UNAUTHORIZED);
-
-    let cookie_users: Vec<Value> = client_a
-        .get(format!("{base_url}/api/users"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(cookie_users.len(), 2);
-    assert_eq!(cookie_users[0]["email"], "leo@example.com");
-    assert_eq!(cookie_users[0]["name"], "Leo");
-    assert_eq!(cookie_users[1]["email"], "dad@example.com");
-    assert_eq!(cookie_users[1]["name"], "Dad");
-
-    let bearer_users: Vec<Value> = bare_client
-        .get(format!("{base_url}/api/users"))
-        .header(AUTHORIZATION, format!("BEARER {raw_token}"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(bearer_users, cookie_users);
+    assert_eq!(unauth_me.status(), StatusCode::UNAUTHORIZED);
 
     // Logout rejects Authorization headers (403) and preserves any active browser session
     let bearer_logout = client_a
@@ -929,12 +904,17 @@ async fn binaries_spa_healthcheck_and_mcp_stdio_end_to_end() {
     let addr = probe.local_addr().expect("local addr");
     drop(probe);
 
+    let temp_dir =
+        std::env::temp_dir().join(format!("rust-home-server-mcp-test-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).expect("create temp test dir");
+
     let server_bin = env!("CARGO_BIN_EXE_rust-home-server");
     let mut server_child = Command::new(server_bin)
+        .current_dir(&temp_dir)
         .env("DATABASE_URL", &tdb.db_url)
         .env("ADDR", addr.to_string())
         .env("APP_ENV", "development")
-        .env("ALLOW_OPEN_REGISTRATION", "true")
+        .env_remove("ALLOW_OPEN_REGISTRATION")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -994,7 +974,7 @@ async fn binaries_spa_healthcheck_and_mcp_stdio_end_to_end() {
         .expect("run rust-home-server healthcheck");
     assert!(hc_status.success(), "rust-home-server healthcheck failed");
 
-    // 3. Register two household users, mint MCP config (0600), and exercise rust-home-server-mcp over stdio
+    // 3. Register a user, mint MCP config (0600), and exercise rust-home-server-mcp over stdio
     let reg = http
         .post(format!("{base_url}/api/auth/register"))
         .json(&json!({
@@ -1007,17 +987,16 @@ async fn binaries_spa_healthcheck_and_mcp_stdio_end_to_end() {
         .unwrap();
     assert_eq!(reg.status(), StatusCode::CREATED);
 
-    let reg_sister = reqwest::Client::new()
+    let second_reg = reqwest::Client::new()
         .post(format!("{base_url}/api/auth/register"))
         .json(&json!({
-            "email": "maya@example.com",
-            "password": "maya-strong-passphrase",
-            "name": "Maya"
+            "email": "second@example.com",
+            "password": "second-strong-passphrase"
         }))
         .send()
         .await
         .unwrap();
-    assert_eq!(reg_sister.status(), StatusCode::CREATED);
+    assert_eq!(second_reg.status(), StatusCode::FORBIDDEN);
 
     let minted = mint_token_via_login(
         &base_url,
@@ -1028,8 +1007,6 @@ async fn binaries_spa_healthcheck_and_mcp_stdio_end_to_end() {
     .await
     .expect("mint token via login");
 
-    let temp_dir =
-        std::env::temp_dir().join(format!("rust-home-server-mcp-test-{}", Uuid::new_v4()));
     let cfg_path = temp_dir.join("rust-home-server.json");
     let cfg = ClientConfig {
         app_url: base_url.clone(),
@@ -1133,38 +1110,6 @@ async fn binaries_spa_healthcheck_and_mcp_stdio_end_to_end() {
     let whoami_user: Value = serde_json::from_str(text).expect("whoami json user");
     assert_eq!(whoami_user["email"], "agent@example.com");
     assert_eq!(whoami_user["name"], "Homelab Agent");
-
-    // JSON-RPC 3: tools/call list_users
-    let users_req = json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {
-            "name": "list_users",
-            "arguments": {}
-        }
-    });
-    mcp_stdin
-        .write_all(format!("{users_req}\n").as_bytes())
-        .await
-        .unwrap();
-    mcp_stdin.flush().await.unwrap();
-
-    let users_line = tokio::time::timeout(Duration::from_secs(5), mcp_lines.next_line())
-        .await
-        .expect("list_users timeout")
-        .expect("read list_users line")
-        .expect("list_users eof");
-    let users_resp: Value = serde_json::from_str(&users_line).unwrap();
-    assert_eq!(users_resp["id"], 3);
-    let users_text = users_resp["result"]["content"][0]["text"]
-        .as_str()
-        .expect("list_users text content");
-    let listed_users: Vec<Value> = serde_json::from_str(users_text).expect("list_users json array");
-    assert_eq!(listed_users.len(), 2);
-    assert_eq!(listed_users[0]["email"], "agent@example.com");
-    assert_eq!(listed_users[1]["email"], "maya@example.com");
-    assert_eq!(listed_users[1]["name"], "Maya");
 
     drop(mcp_stdin);
     let _ = mcp_child.kill().await;

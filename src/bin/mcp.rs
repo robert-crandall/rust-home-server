@@ -24,26 +24,12 @@ impl AppMcp {
     }
 
     #[tool(
-        description = "Verify connectivity to the Rust Home Server homelab portal and return the signed-in household user."
+        description = "Verify connectivity to the Rust Home Server homelab portal and return the signed-in user."
     )]
     async fn whoami(&self) -> Result<CallToolResult, McpError> {
         match self.client.me().await {
             Ok(user) => {
                 let text = serde_json::to_string_pretty(&user)
-                    .map_err(|err| McpError::internal_error(err.to_string(), None))?;
-                Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
-            }
-            Err(err) => Ok(CallToolResult::error(vec![ContentBlock::text(err)])),
-        }
-    }
-
-    #[tool(
-        description = "List household members on this Rust Home Server server so AI harnesses can reference shared household users."
-    )]
-    async fn list_users(&self) -> Result<CallToolResult, McpError> {
-        match self.client.list_users().await {
-            Ok(users) => {
-                let text = serde_json::to_string_pretty(&users)
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?;
                 Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
             }
@@ -61,7 +47,7 @@ impl ServerHandler for AppMcp {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(
-                "Rust Home Server homelab MCP server. Connects to the household Rust Home Server API using personal access tokens.",
+                "Rust Home Server homelab MCP server. Connects to the Rust Home Server API using personal access tokens.",
             )
     }
 }

@@ -169,8 +169,7 @@ impl Modify for SecurityAddon {
     modifiers(&SecurityAddon),
     tags(
         (name = "system", description = "Health and bootstrap metadata"),
-        (name = "auth", description = "Email + password household authentication"),
-        (name = "users", description = "Household member directory"),
+        (name = "auth", description = "Email + password authentication"),
         (name = "tokens", description = "Personal access tokens for local MCP clients")
     )
 )]
@@ -184,7 +183,6 @@ pub fn build_openapi_router() -> OpenApiRouter<AppState> {
         .routes(routes!(login))
         .routes(routes!(logout))
         .routes(routes!(me))
-        .routes(routes!(list_users))
         .routes(routes!(list_tokens, create_token))
         .routes(routes!(delete_token))
 }
@@ -425,44 +423,12 @@ async fn logout(
         ("bearerToken" = [])
     ),
     responses(
-        (status = 200, description = "Current authenticated household user", body = User),
+        (status = 200, description = "Current authenticated user", body = User),
         (status = 401, description = "Not signed in", body = ErrorBody)
     )
 )]
 async fn me(AuthenticatedUser(user): AuthenticatedUser) -> Json<User> {
     Json(user)
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/users",
-    tag = "users",
-    security(
-        ("sessionCookie" = []),
-        ("bearerToken" = [])
-    ),
-    responses(
-        (status = 200, description = "Household members in this workspace", body = [User]),
-        (status = 401, description = "Not signed in", body = ErrorBody)
-    )
-)]
-async fn list_users(
-    State(state): State<AppState>,
-    AuthenticatedUser(_user): AuthenticatedUser,
-) -> Result<Json<Vec<User>>, ApiError> {
-    let users = sqlx::query_as::<_, User>(
-        "SELECT id, email, name, created_at
-         FROM users
-         ORDER BY created_at ASC, id ASC",
-    )
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|err| {
-        tracing::error!(?err, "failed to list household users");
-        ApiError::internal("failed to load household users")
-    })?;
-
-    Ok(Json(users))
 }
 
 #[utoipa::path(

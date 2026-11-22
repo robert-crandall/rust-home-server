@@ -70,7 +70,6 @@ services:
       # Put HTTPS termination in front when setting APP_ENV=production;
       # leave APP_ENV unset when serving plain HTTP on a trusted LAN.
       APP_ENV: production
-      ALLOW_OPEN_REGISTRATION: "true"
     depends_on:
       db:
         condition: service_healthy
@@ -94,5 +93,5 @@ volumes:
 ```
 
 - **TLS vs. trusted-LAN HTTP**: `APP_ENV=production` marks the `rust_home_server_session` cookie `Secure`, so browsers (and `rust-home-server-mcp token` against an `http://` URL) drop it over plain HTTP. Put TLS termination in front of the container in production (preserving the incoming `Host` header, e.g., `proxy_set_header Host $host` in `nginx`, so same-origin CSRF checks match `Origin`), or leave `APP_ENV` unset when accessing `http://<homelab-ip>:8080` directly on a trusted home network.
-- **Household onboarding**: Each household member registers with their own email and password. Because anyone who can reach the server can register while `ALLOW_OPEN_REGISTRATION=true`, flip `ALLOW_OPEN_REGISTRATION=false` once your household accounts are created to lock new sign-ups.
+- **Registration policy**: By default (`ALLOW_OPEN_REGISTRATION=false`), only the first account can register to bootstrap a new instance. Set `ALLOW_OPEN_REGISTRATION=true` when building a multi-user app where additional users register their own accounts.
 
