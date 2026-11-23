@@ -4,7 +4,7 @@
 # --- 1. Build the Solid 2.0 SPA ---
 # Use Debian slim (glibc) rather than Alpine (musl) because @solidjs/compiler
 # ships native Linux prebuilds for gnu targets only.
-FROM --platform=$BUILDPLATFORM oven/bun:1.3-slim AS web-build
+FROM --platform=$BUILDPLATFORM oven/bun:1.4-slim AS web-build
 WORKDIR /src/web
 
 COPY web/package.json web/bun.lock web/bunfig.toml ./
