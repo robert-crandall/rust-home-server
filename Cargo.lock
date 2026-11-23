@@ -1751,6 +1751,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-home-server"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "axum",
+ "chrono",
+ "dotenvy",
+ "hex",
+ "mime_guess",
+ "reqwest",
+ "rmcp",
+ "rpassword",
+ "rust-embed",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "sqlx",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "utoipa",
+ "utoipa-axum",
+ "uuid",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1849,36 +1879,6 @@ dependencies = [
  "quote",
  "serde_derive_internals",
  "syn 3.0.10",
-]
-
-[[package]]
-name = "rust-home-server"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "axum",
- "chrono",
- "dotenvy",
- "hex",
- "mime_guess",
- "reqwest",
- "rmcp",
- "rpassword",
- "rust-embed",
- "schemars",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "subtle",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "utoipa",
- "utoipa-axum",
- "uuid",
 ]
 
 [[package]]
