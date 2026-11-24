@@ -3,11 +3,18 @@ use std::env;
 use std::net::SocketAddr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CfAccessConfig {
+    pub team_domain: String,
+    pub aud: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub database_url: String,
     pub listen_addr: SocketAddr,
     pub secure_cookies: bool,
     pub allow_open_registration: bool,
+    pub cf_access: Option<CfAccessConfig>,
 }
 
 impl Config {
@@ -63,11 +70,45 @@ impl Config {
             }
         };
 
+        let cf_team_domain = vars
+            .get("CF_ACCESS_TEAM_DOMAIN")
+            .map(|v| v.trim().trim_end_matches('/'))
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string);
+        let cf_aud = vars
+            .get("CF_ACCESS_AUD")
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string);
+
+        let cf_access = match (cf_team_domain, cf_aud) {
+            (Some(team_domain), Some(aud)) => {
+                let parsed = url::Url::parse(&team_domain).map_err(|_| {
+                    "CF_ACCESS_TEAM_DOMAIN must be a valid https:// URL".to_string()
+                })?;
+                if parsed.scheme() != "https" || parsed.host_str().is_none() {
+                    return Err(
+                        "CF_ACCESS_TEAM_DOMAIN must start with https:// and include a host"
+                            .to_string(),
+                    );
+                }
+                Some(CfAccessConfig { team_domain, aud })
+            }
+            (None, None) => None,
+            _ => {
+                return Err(
+                    "CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD must either both be set or both be unset"
+                        .to_string(),
+                );
+            }
+        };
+
         Ok(Self {
             database_url,
             listen_addr,
             secure_cookies,
             allow_open_registration,
+            cf_access,
         })
     }
 }
@@ -148,6 +189,36 @@ mod tests {
         assert!(prod.allow_open_registration);
 
         vars.insert("APP_ENV".into(), "prod".into());
+        assert!(Config::from_map(&vars).is_err());
+    }
+
+    #[test]
+    fn validates_cloudflare_access_config() {
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "DATABASE_URL".into(),
+            "postgres://localhost/rust_home_server".into(),
+        );
+        vars.insert(
+            "CF_ACCESS_TEAM_DOMAIN".into(),
+            "https://example.cloudflareaccess.com/".into(),
+        );
+        assert!(Config::from_map(&vars).is_err());
+
+        vars.insert("CF_ACCESS_AUD".into(), "aud-tag-123".into());
+        let cfg = Config::from_map(&vars).unwrap();
+        assert_eq!(
+            cfg.cf_access,
+            Some(CfAccessConfig {
+                team_domain: "https://example.cloudflareaccess.com".into(),
+                aud: "aud-tag-123".into(),
+            })
+        );
+
+        vars.insert(
+            "CF_ACCESS_TEAM_DOMAIN".into(),
+            "http://example.cloudflareaccess.com".into(),
+        );
         assert!(Config::from_map(&vars).is_err());
     }
 }

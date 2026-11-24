@@ -106,8 +106,15 @@
         ],
         "operationId": "logout",
         "responses": {
-          "204": {
-            "description": "Signed out"
+          "200": {
+            "description": "Signed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Cross-origin or non-browser request rejected",
@@ -479,9 +486,13 @@
       "AppInfo": {
         "type": "object",
         "required": [
-          "registrationOpen"
+          "registrationOpen",
+          "cloudflareAccessEnabled"
         ],
         "properties": {
+          "cloudflareAccessEnabled": {
+            "type": "boolean"
+          },
           "registrationOpen": {
             "type": "boolean"
           }
@@ -561,6 +572,17 @@
           },
           "password": {
             "type": "string"
+          }
+        }
+      },
+      "LogoutResponse": {
+        "type": "object",
+        "properties": {
+          "logoutUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

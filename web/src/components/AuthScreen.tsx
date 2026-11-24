@@ -71,6 +71,16 @@ export function AuthScreen() {
           )}
         </Show>
 
+        <Show when={auth.cloudflareAccessEnabled()}>
+          <a
+            href="/cdn-cgi/access/login"
+            class="btn btn-primary"
+            style={{ "text-decoration": "none", "text-align": "center" }}
+          >
+            Sign in with Cloudflare Access
+          </a>
+        </Show>
+
         <form class="stack-form" onSubmit={(e) => void handleSubmit(e)}>
           <Show when={isRegister()}>
             <div class="field">

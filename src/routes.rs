@@ -16,11 +16,11 @@ use utoipa_axum::routes;
 use uuid::Uuid;
 
 use crate::auth::{
-    ApiToken, AuthenticatedUser, CreatedApiToken, SESSION_COOKIE_NAME, SessionUser, User,
-    build_clear_session_cookie, build_session_cookie, create_session, extract_session_cookie,
-    hash_password, normalize_and_validate_email, normalize_display_name, random_hex_secret,
-    register_user_with_session, security_middleware, sha256_bytes, validate_password,
-    verify_password,
+    ApiToken, AuthenticatedUser, CfAccessAuth, CreatedApiToken, SESSION_COOKIE_NAME, SessionUser,
+    User, build_clear_session_cookie, build_session_cookie, create_session, extract_cf_access_jwt,
+    extract_session_cookie, hash_password, normalize_and_validate_email, normalize_display_name,
+    random_hex_secret, register_user_with_session, security_middleware, sha256_bytes,
+    validate_password, verify_password,
 };
 
 #[derive(Clone)]
@@ -28,6 +28,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub secure_cookies: bool,
     pub allow_open_registration: bool,
+    pub cf_access: Option<CfAccessAuth>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
@@ -114,6 +115,13 @@ pub struct HealthStatus {
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
     pub registration_open: bool,
+    pub cloudflare_access_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LogoutResponse {
+    pub logout_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -259,7 +267,10 @@ async fn get_app_info(State(state): State<AppState>) -> Result<Json<AppInfo>, Ap
         !any_user_exists(&state.pool).await?
     };
 
-    Ok(Json(AppInfo { registration_open }))
+    Ok(Json(AppInfo {
+        registration_open,
+        cloudflare_access_enabled: state.cf_access.is_some(),
+    }))
 }
 
 #[utoipa::path(
@@ -313,7 +324,7 @@ struct LoginUserRow {
     email: String,
     name: String,
     created_at: chrono::DateTime<chrono::Utc>,
-    password_hash: String,
+    password_hash: Option<String>,
 }
 
 #[utoipa::path(
@@ -353,7 +364,7 @@ async fn login(
         ApiError::internal("failed to verify credentials")
     })?;
 
-    let stored_hash = row.as_ref().map(|r| r.password_hash.clone());
+    let stored_hash = row.as_ref().and_then(|r| r.password_hash.clone());
     let valid = verify_password(payload.password, stored_hash).await?;
     let Some(row) = row.filter(|_| valid) else {
         return Err(ApiError::unauthorized("invalid email or password"));
@@ -380,7 +391,7 @@ async fn login(
     path = "/api/auth/logout",
     tag = "auth",
     responses(
-        (status = 204, description = "Signed out"),
+        (status = 200, description = "Signed out", body = LogoutResponse),
         (status = 403, description = "Cross-origin or non-browser request rejected", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody)
     )
@@ -409,9 +420,15 @@ async fn logout(
             })?;
     }
 
+    let logout_url = if state.cf_access.is_some() && extract_cf_access_jwt(&req_headers).is_some() {
+        Some("/cdn-cgi/access/logout".to_string())
+    } else {
+        None
+    };
+
     let mut headers = HeaderMap::new();
     headers.insert(SET_COOKIE, build_clear_session_cookie(state.secure_cookies));
-    Ok((StatusCode::NO_CONTENT, headers).into_response())
+    Ok((StatusCode::OK, headers, Json(LogoutResponse { logout_url })).into_response())
 }
 
 #[utoipa::path(

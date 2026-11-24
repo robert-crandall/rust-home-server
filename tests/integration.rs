@@ -559,6 +559,7 @@ async fn spawn_in_process_server(pool: PgPool, allow_open_registration: bool) ->
         pool,
         secure_cookies: false,
         allow_open_registration,
+        cf_access: None,
     };
     let app = build_router(state);
     tokio::spawn(async move {

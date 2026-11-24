@@ -147,6 +147,7 @@ export interface components {
             name: string;
         };
         AppInfo: {
+            cloudflareAccessEnabled: boolean;
             registrationOpen: boolean;
         };
         CreateTokenRequest: {
@@ -170,6 +171,9 @@ export interface components {
         LoginRequest: {
             email: string;
             password: string;
+        };
+        LogoutResponse: {
+            logoutUrl?: string | null;
         };
         RegisterRequest: {
             email: string;
@@ -283,11 +287,13 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Signed out */
-            204: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["LogoutResponse"];
+                };
             };
             /** @description Cross-origin or non-browser request rejected */
             403: {

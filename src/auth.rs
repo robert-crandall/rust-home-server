@@ -1,5 +1,5 @@
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 
 use argon2::Argon2;
 use argon2::password_hash::rand_core::{OsRng, RngCore};
@@ -11,20 +11,27 @@ use axum::http::{HeaderMap, HeaderValue, Method};
 use axum::middleware::Next;
 use axum::response::Response;
 use chrono::{DateTime, Duration, Utc};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, jwk::JwkSet};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
 use subtle::ConstantTimeEq;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, RwLock, Semaphore};
 use url::Url;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::config::CfAccessConfig;
 use crate::routes::{ApiError, AppState};
 
 pub const SESSION_COOKIE_NAME: &str = "rust_home_server_session";
 pub const SESSION_TTL_DAYS: i64 = 30;
 pub const SESSION_RENEW_THRESHOLD_DAYS: i64 = 15;
+const CF_ACCESS_JWT_HEADER: &str = "cf-access-jwt-assertion";
+const CF_ACCESS_COOKIE_NAME: &str = "CF_Authorization";
+const CF_JWKS_TTL: StdDuration = StdDuration::from_secs(3600);
+const CF_JWKS_REFRESH_COOLDOWN: StdDuration = StdDuration::from_secs(30);
+const CF_JWKS_FETCH_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const MIN_PASSWORD_LEN: usize = 8;
 const MAX_PASSWORD_LEN: usize = 128;
 const MAX_EMAIL_LEN: usize = 254;
@@ -207,7 +214,7 @@ pub fn build_clear_session_cookie(secure: bool) -> HeaderValue {
     HeaderValue::from_str(&value).expect("valid clear Set-Cookie header")
 }
 
-pub fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
+fn extract_cookie(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
     for header in headers.get_all(COOKIE) {
         let Ok(raw) = header.to_str() else {
             continue;
@@ -216,12 +223,243 @@ pub fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
             let Some((name, value)) = pair.trim().split_once('=') else {
                 continue;
             };
-            if name == SESSION_COOKIE_NAME && !value.is_empty() {
+            if name == cookie_name && !value.is_empty() {
                 return Some(value.to_string());
             }
         }
     }
     None
+}
+
+pub fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
+    extract_cookie(headers, SESSION_COOKIE_NAME)
+}
+
+pub fn extract_cf_access_jwt(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(CF_ACCESS_JWT_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| extract_cookie(headers, CF_ACCESS_COOKIE_NAME))
+}
+
+#[derive(Default)]
+struct JwksCacheState {
+    keys: Option<JwkSet>,
+    fetched_at: Option<Instant>,
+    last_attempt: Option<Instant>,
+}
+
+#[derive(Default)]
+struct CfAccessJwksCache {
+    inner: RwLock<JwksCacheState>,
+    refresh_lock: AsyncMutex<()>,
+}
+
+impl CfAccessJwksCache {
+    fn lookup_cached(state: &JwksCacheState, kid: &str) -> Option<Result<JwkSet, ApiError>> {
+        let in_cooldown = state
+            .last_attempt
+            .is_some_and(|t| t.elapsed() < CF_JWKS_REFRESH_COOLDOWN);
+        if let (Some(keys), Some(fetched_at)) = (&state.keys, state.fetched_at) {
+            let fresh = fetched_at.elapsed() < CF_JWKS_TTL;
+            if fresh && (keys.find(kid).is_some() || in_cooldown) {
+                return Some(Ok(keys.clone()));
+            }
+        }
+        if in_cooldown {
+            return Some(Err(ApiError::internal(
+                "Cloudflare Access certs refresh in backoff after recent failure",
+            )));
+        }
+        None
+    }
+
+    async fn get_for_kid(
+        &self,
+        http: &reqwest::Client,
+        team_domain: &str,
+        kid: &str,
+    ) -> Result<JwkSet, ApiError> {
+        if let Some(res) = Self::lookup_cached(&*self.inner.read().await, kid) {
+            return res;
+        }
+
+        let _refresh_guard = self.refresh_lock.lock().await;
+        if let Some(res) = Self::lookup_cached(&*self.inner.read().await, kid) {
+            return res;
+        }
+
+        let certs_url = format!("{team_domain}/cdn-cgi/access/certs");
+        let fetch_result = async {
+            http.get(&certs_url)
+                .timeout(CF_JWKS_FETCH_TIMEOUT)
+                .send()
+                .await
+                .map_err(|err| {
+                    tracing::error!(?err, "failed to fetch Cloudflare Access JWKS");
+                    ApiError::internal("failed to verify Cloudflare Access token")
+                })?
+                .error_for_status()
+                .map_err(|err| {
+                    tracing::error!(?err, "Cloudflare Access JWKS endpoint returned error");
+                    ApiError::internal("failed to verify Cloudflare Access token")
+                })?
+                .json::<JwkSet>()
+                .await
+                .map_err(|err| {
+                    tracing::error!(?err, "invalid Cloudflare Access JWKS payload");
+                    ApiError::internal("failed to verify Cloudflare Access token")
+                })
+        }
+        .await;
+
+        let now = Instant::now();
+        let mut guard = self.inner.write().await;
+        guard.last_attempt = Some(now);
+        match fetch_result {
+            Ok(jwks) => {
+                guard.keys = Some(jwks.clone());
+                guard.fetched_at = Some(now);
+                Ok(jwks)
+            }
+            Err(err) => Err(err),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct CfAccessAuth {
+    config: CfAccessConfig,
+    jwks: Arc<CfAccessJwksCache>,
+    http: reqwest::Client,
+}
+
+impl CfAccessAuth {
+    pub fn new(config: CfAccessConfig) -> Self {
+        Self {
+            config,
+            jwks: Arc::new(CfAccessJwksCache::default()),
+            http: reqwest::Client::new(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CfAccessClaims {
+    email: Option<String>,
+}
+
+fn verify_cf_access_jwt(
+    token: &str,
+    jwks: &JwkSet,
+    team_domain: &str,
+    aud: &str,
+) -> Result<String, ApiError> {
+    let header = jsonwebtoken::decode_header(token)
+        .map_err(|_| ApiError::unauthorized("invalid Cloudflare Access token"))?;
+    if header.alg != Algorithm::RS256 {
+        return Err(ApiError::unauthorized(
+            "unsupported Cloudflare Access token algorithm",
+        ));
+    }
+    let kid = header
+        .kid
+        .as_deref()
+        .ok_or_else(|| ApiError::unauthorized("invalid Cloudflare Access token"))?;
+
+    let jwk = jwks
+        .find(kid)
+        .ok_or_else(|| ApiError::unauthorized("unknown Cloudflare Access signing key"))?;
+    let decoding_key = DecodingKey::from_jwk(jwk)
+        .map_err(|_| ApiError::unauthorized("invalid Cloudflare Access signing key"))?;
+
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.set_required_spec_claims(&["exp", "iss", "aud"]);
+    validation.set_audience(&[aud]);
+    validation.set_issuer(&[team_domain]);
+    validation.validate_nbf = true;
+
+    let data = jsonwebtoken::decode::<CfAccessClaims>(token, &decoding_key, &validation)
+        .map_err(|_| ApiError::unauthorized("invalid or expired Cloudflare Access token"))?;
+
+    let raw_email = data
+        .claims
+        .email
+        .as_deref()
+        .ok_or_else(|| ApiError::unauthorized("Cloudflare Access token missing email"))?;
+    normalize_and_validate_email(raw_email)
+        .map_err(|_| ApiError::unauthorized("Cloudflare Access token has invalid email"))
+}
+
+async fn authenticate_cf_access(
+    pool: &PgPool,
+    cf: &CfAccessAuth,
+    token: &str,
+) -> Result<User, ApiError> {
+    let header = jsonwebtoken::decode_header(token)
+        .map_err(|_| ApiError::unauthorized("invalid Cloudflare Access token"))?;
+    if header.alg != Algorithm::RS256 {
+        return Err(ApiError::unauthorized(
+            "unsupported Cloudflare Access token algorithm",
+        ));
+    }
+    let kid = header
+        .kid
+        .as_deref()
+        .ok_or_else(|| ApiError::unauthorized("invalid Cloudflare Access token"))?;
+
+    let jwks = cf
+        .jwks
+        .get_for_kid(&cf.http, &cf.config.team_domain, kid)
+        .await?;
+    let email = verify_cf_access_jwt(token, &jwks, &cf.config.team_domain, &cf.config.aud)?;
+
+    if let Some(existing) = sqlx::query_as::<_, User>(
+        "SELECT id, email, name, created_at FROM users WHERE lower(email) = $1",
+    )
+    .bind(&email)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!(?err, "failed to look up Cloudflare Access user");
+        ApiError::internal("failed to verify user")
+    })? {
+        return Ok(existing);
+    }
+
+    let name = normalize_display_name(None, &email)?;
+    if let Some(created) = sqlx::query_as::<_, User>(
+        "INSERT INTO users (email, password_hash, name)
+         VALUES ($1, NULL, $2)
+         ON CONFLICT (lower(email)) DO NOTHING
+         RETURNING id, email, name, created_at",
+    )
+    .bind(&email)
+    .bind(&name)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!(?err, "failed to provision Cloudflare Access user");
+        ApiError::internal("failed to provision user")
+    })? {
+        return Ok(created);
+    }
+
+    sqlx::query_as::<_, User>(
+        "SELECT id, email, name, created_at FROM users WHERE lower(email) = $1",
+    )
+    .bind(&email)
+    .fetch_one(pool)
+    .await
+    .map_err(|err| {
+        tracing::error!(
+            ?err,
+            "failed to reload Cloudflare Access user after conflict"
+        );
+        ApiError::internal("failed to verify user")
+    })
 }
 
 pub async fn create_session(pool: &PgPool, user_id: Uuid) -> Result<String, ApiError> {
@@ -455,6 +693,15 @@ async fn authenticate_bearer_token(
     })
 }
 
+async fn authenticate_browser_user(state: &AppState, parts: &mut Parts) -> Result<User, ApiError> {
+    if let Some(cf) = &state.cf_access
+        && let Some(token) = extract_cf_access_jwt(&parts.headers)
+    {
+        return authenticate_cf_access(&state.pool, cf, &token).await;
+    }
+    authenticate_session_cookie(state, parts).await
+}
+
 impl<S> FromRequestParts<S> for SessionUser
 where
     AppState: FromRef<S>,
@@ -469,7 +716,7 @@ where
             ));
         }
         let app_state = AppState::from_ref(state);
-        let user = authenticate_session_cookie(&app_state, parts).await?;
+        let user = authenticate_browser_user(&app_state, parts).await?;
         Ok(SessionUser(user))
     }
 }
@@ -483,12 +730,12 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app_state = AppState::from_ref(state);
-        // Never fall back to cookies when an Authorization header is supplied.
+        // Never fall back to cookies or Cloudflare Access when an Authorization header is supplied.
         if let Some(auth_header) = parts.headers.get(AUTHORIZATION) {
             let user = authenticate_bearer_token(&app_state.pool, auth_header).await?;
             return Ok(AuthenticatedUser(user));
         }
-        let user = authenticate_session_cookie(&app_state, parts).await?;
+        let user = authenticate_browser_user(&app_state, parts).await?;
         Ok(AuthenticatedUser(user))
     }
 }
@@ -567,5 +814,177 @@ mod tests {
         assert!(validate_password("🔐🔐").is_err());
         assert!(validate_password("🔐🔐🔐🔐🔐🔐🔐🔐").is_ok());
         assert!(validate_password(&"a".repeat(129)).is_err());
+    }
+
+    fn make_rsa_jwk_and_key(kid: &str) -> (JwkSet, jsonwebtoken::EncodingKey) {
+        use rsa::RsaPrivateKey;
+        use rsa::pkcs8::EncodePrivateKey;
+        use rsa::traits::PublicKeyParts;
+
+        let mut rng = OsRng;
+        let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("generate RSA key");
+        let pem = priv_key
+            .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+            .expect("encode PEM");
+        let encoding_key =
+            jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes()).expect("encoding key");
+
+        let n = base64_url_no_pad(&priv_key.n().to_bytes_be());
+        let e = base64_url_no_pad(&priv_key.e().to_bytes_be());
+        let jwks: JwkSet = serde_json::from_value(serde_json::json!({
+            "keys": [{
+                "kty": "RSA",
+                "kid": kid,
+                "alg": "RS256",
+                "use": "sig",
+                "n": n,
+                "e": e,
+            }]
+        }))
+        .expect("parse JwkSet");
+        (jwks, encoding_key)
+    }
+
+    fn base64_url_no_pad(bytes: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::with_capacity((bytes.len() * 4).div_ceil(3));
+        for chunk in bytes.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+            let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+            let triple = (b0 << 16) | (b1 << 8) | b2;
+            out.push(TABLE[((triple >> 18) & 0x3f) as usize] as char);
+            out.push(TABLE[((triple >> 12) & 0x3f) as usize] as char);
+            if chunk.len() > 1 {
+                out.push(TABLE[((triple >> 6) & 0x3f) as usize] as char);
+            }
+            if chunk.len() > 2 {
+                out.push(TABLE[(triple & 0x3f) as usize] as char);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn verify_cf_access_jwt_accepts_valid_and_rejects_invalid_tokens() {
+        let team = "https://example.cloudflareaccess.com";
+        let aud = "test-aud-tag";
+        let (jwks, enc_key) = make_rsa_jwk_and_key("key-1");
+        let now = Utc::now().timestamp();
+
+        let sign = |claims: serde_json::Value, kid: &str, key: &jsonwebtoken::EncodingKey| {
+            let mut header = jsonwebtoken::Header::new(Algorithm::RS256);
+            header.kid = Some(kid.to_string());
+            jsonwebtoken::encode(&header, &claims, key).expect("sign jwt")
+        };
+
+        // Valid token normalizes email to lowercase
+        let valid = sign(
+            serde_json::json!({
+                "aud": [aud],
+                "iss": team,
+                "exp": now + 300,
+                "iat": now,
+                "email": "Alice@Example.com",
+            }),
+            "key-1",
+            &enc_key,
+        );
+        assert_eq!(
+            verify_cf_access_jwt(&valid, &jwks, team, aud).unwrap(),
+            "alice@example.com"
+        );
+
+        // Wrong audience rejected
+        let wrong_aud = sign(
+            serde_json::json!({
+                "aud": ["other-aud"],
+                "iss": team,
+                "exp": now + 300,
+                "email": "alice@example.com",
+            }),
+            "key-1",
+            &enc_key,
+        );
+        assert!(verify_cf_access_jwt(&wrong_aud, &jwks, team, aud).is_err());
+
+        // Missing aud or iss rejected
+        let missing_aud = sign(
+            serde_json::json!({
+                "iss": team,
+                "exp": now + 300,
+                "email": "alice@example.com",
+            }),
+            "key-1",
+            &enc_key,
+        );
+        assert!(verify_cf_access_jwt(&missing_aud, &jwks, team, aud).is_err());
+
+        let missing_iss = sign(
+            serde_json::json!({
+                "aud": [aud],
+                "exp": now + 300,
+                "email": "alice@example.com",
+            }),
+            "key-1",
+            &enc_key,
+        );
+        assert!(verify_cf_access_jwt(&missing_iss, &jwks, team, aud).is_err());
+
+        // Expired token rejected
+        let expired = sign(
+            serde_json::json!({
+                "aud": [aud],
+                "iss": team,
+                "exp": now - 300,
+                "email": "alice@example.com",
+            }),
+            "key-1",
+            &enc_key,
+        );
+        assert!(verify_cf_access_jwt(&expired, &jwks, team, aud).is_err());
+
+        // Missing email rejected
+        let no_email = sign(
+            serde_json::json!({
+                "aud": [aud],
+                "iss": team,
+                "exp": now + 300,
+            }),
+            "key-1",
+            &enc_key,
+        );
+        assert!(verify_cf_access_jwt(&no_email, &jwks, team, aud).is_err());
+
+        // Wrong signature rejected
+        let (_, other_key) = make_rsa_jwk_and_key("key-1");
+        let wrong_sig = sign(
+            serde_json::json!({
+                "aud": [aud],
+                "iss": team,
+                "exp": now + 300,
+                "email": "alice@example.com",
+            }),
+            "key-1",
+            &other_key,
+        );
+        assert!(verify_cf_access_jwt(&wrong_sig, &jwks, team, aud).is_err());
+
+        // Non-RS256 algorithm rejected
+        let mut hs_header = jsonwebtoken::Header::new(Algorithm::HS256);
+        hs_header.kid = Some("key-1".to_string());
+        let hs_token = jsonwebtoken::encode(
+            &hs_header,
+            &serde_json::json!({
+                "aud": [aud],
+                "iss": team,
+                "exp": now + 300,
+                "email": "alice@example.com",
+            }),
+            &jsonwebtoken::EncodingKey::from_secret(b"secret"),
+        )
+        .expect("sign hs256");
+        assert!(verify_cf_access_jwt(&hs_token, &jwks, team, aud).is_err());
     }
 }

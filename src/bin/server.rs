@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
+use app::auth::CfAccessAuth;
 use app::config::{Config, healthcheck_url_from_env};
 use app::db::connect_and_migrate;
 use app::routes::{AppState, ErrorBody, build_router};
@@ -47,6 +48,7 @@ async fn main() -> ExitCode {
         pool,
         secure_cookies: cfg.secure_cookies,
         allow_open_registration: cfg.allow_open_registration,
+        cf_access: cfg.cf_access.map(CfAccessAuth::new),
     })
     .fallback(serve_spa);
 
