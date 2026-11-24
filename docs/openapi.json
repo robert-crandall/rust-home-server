@@ -86,6 +86,16 @@
               }
             }
           },
+          "409": {
+            "description": "Conflicting Cloudflare Access session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Authentication queue busy",
             "content": {
@@ -225,7 +235,7 @@
             }
           },
           "409": {
-            "description": "Email already registered",
+            "description": "Email already registered or conflicting Cloudflare Access session",
             "content": {
               "application/json": {
                 "schema": {

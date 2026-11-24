@@ -1216,6 +1216,45 @@ async fn cloudflare_access_auth_provisioning_and_logout_flow() {
         json!({ "registrationOpen": true, "cloudflareAccessEnabled": true })
     );
 
+    // Pre-existing password-backed user links by email (case-insensitively) without losing
+    // their display name or password login.
+    let existing_reg = client
+        .post(format!("{base_url}/api/auth/register"))
+        .json(&json!({
+            "email": "carol@example.com",
+            "password": "carol-strong-passphrase",
+            "name": "Carol Custom"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(existing_reg.status(), StatusCode::CREATED);
+    let carol_local: Value = existing_reg.json().await.unwrap();
+
+    let carol_jwt = sign_jwt("Carol@Example.com");
+    let carol_cf: Value = client
+        .get(format!("{base_url}/api/auth/me"))
+        .header("Cf-Access-Jwt-Assertion", &carol_jwt)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(carol_cf["id"], carol_local["id"]);
+    assert_eq!(carol_cf["name"], "Carol Custom");
+
+    let carol_relogin = client
+        .post(format!("{base_url}/api/auth/login"))
+        .json(&json!({
+            "email": "carol@example.com",
+            "password": "carol-strong-passphrase"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(carol_relogin.status(), StatusCode::OK);
+
     // Race two concurrent first requests to verify ON CONFLICT auto-provisioning
     let jwt = sign_jwt("Alice@Example.com");
     let req1 = client
@@ -1284,6 +1323,88 @@ async fn cloudflare_access_auth_provisioning_and_logout_flow() {
     assert_eq!(plain_logout.status(), StatusCode::OK);
     let plain_logout_body: Value = plain_logout.json().await.unwrap();
     assert_eq!(plain_logout_body, json!({ "logoutUrl": null }));
+
+    // Local login and registration are rejected while Cloudflare Access credentials are present
+    let conflict_login = client
+        .post(format!("{base_url}/api/auth/login"))
+        .header("Cf-Access-Jwt-Assertion", &jwt)
+        .json(&json!({
+            "email": "bob@example.com",
+            "password": "bob-strong-passphrase"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict_login.status(), StatusCode::CONFLICT);
+    assert!(conflict_login.headers().get("set-cookie").is_none());
+
+    let conflict_login_cookie = client
+        .post(format!("{base_url}/api/auth/login"))
+        .header(COOKIE, format!("CF_Authorization={jwt}"))
+        .json(&json!({
+            "email": "bob@example.com",
+            "password": "bob-strong-passphrase"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict_login_cookie.status(), StatusCode::CONFLICT);
+
+    let conflict_register = client
+        .post(format!("{base_url}/api/auth/register"))
+        .header("Cf-Access-Jwt-Assertion", &jwt)
+        .json(&json!({
+            "email": "bob@example.com",
+            "password": "bob-strong-passphrase"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict_register.status(), StatusCode::CONFLICT);
+    assert!(conflict_register.headers().get("set-cookie").is_none());
+
+    // Passwordless CF-provisioned user cannot sign in locally without a password
+    let passwordless_login = client
+        .post(format!("{base_url}/api/auth/login"))
+        .json(&json!({
+            "email": "alice@example.com",
+            "password": "any-attempted-password"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(passwordless_login.status(), StatusCode::UNAUTHORIZED);
+    assert!(passwordless_login.headers().get("set-cookie").is_none());
+
+    // Cookie-only CF_Authorization authenticates browser requests
+    let cookie_me = client
+        .get(format!("{base_url}/api/auth/me"))
+        .header(COOKIE, format!("CF_Authorization={jwt}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cookie_me.status(), StatusCode::OK);
+    let cookie_user: Value = cookie_me.json().await.unwrap();
+    assert_eq!(cookie_user["email"], "alice@example.com");
+
+    // Invalid CF JWT must not fall back to a valid local session cookie
+    let local_session = app::auth::create_session(
+        &tdb.pool,
+        Uuid::parse_str(u1["id"].as_str().unwrap()).unwrap(),
+    )
+    .await
+    .unwrap();
+    let bad_cf_with_session = client
+        .get(format!("{base_url}/api/auth/me"))
+        .header(
+            COOKIE,
+            format!("{}={local_session}", app::auth::SESSION_COOKIE_NAME),
+        )
+        .header("Cf-Access-Jwt-Assertion", "not-a-valid-jwt")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_cf_with_session.status(), StatusCode::UNAUTHORIZED);
 
     tdb.teardown().await;
 }

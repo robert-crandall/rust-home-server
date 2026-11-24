@@ -282,14 +282,20 @@ async fn get_app_info(State(state): State<AppState>) -> Result<Json<AppInfo>, Ap
         (status = 201, description = "Account created and signed in", body = User),
         (status = 400, description = "Invalid email, password, or name", body = ErrorBody),
         (status = 403, description = "Registration is closed", body = ErrorBody),
-        (status = 409, description = "Email already registered", body = ErrorBody),
+        (status = 409, description = "Email already registered or conflicting Cloudflare Access session", body = ErrorBody),
         (status = 429, description = "Authentication queue busy", body = ErrorBody)
     )
 )]
 async fn register(
     State(state): State<AppState>,
+    req_headers: HeaderMap,
     Json(payload): Json<RegisterRequest>,
 ) -> Result<Response, ApiError> {
+    if state.cf_access.is_some() && extract_cf_access_jwt(&req_headers).is_some() {
+        return Err(ApiError::conflict(
+            "local authentication is disabled while Cloudflare Access credentials are present",
+        ));
+    }
     let email = normalize_and_validate_email(&payload.email)?;
     validate_password(&payload.password)?;
     let name = normalize_display_name(payload.name.as_deref(), &email)?;
@@ -336,13 +342,20 @@ struct LoginUserRow {
         (status = 200, description = "Signed in", body = User),
         (status = 400, description = "Malformed credentials", body = ErrorBody),
         (status = 401, description = "Invalid email or password", body = ErrorBody),
+        (status = 409, description = "Conflicting Cloudflare Access session", body = ErrorBody),
         (status = 429, description = "Authentication queue busy", body = ErrorBody)
     )
 )]
 async fn login(
     State(state): State<AppState>,
+    req_headers: HeaderMap,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Response, ApiError> {
+    if state.cf_access.is_some() && extract_cf_access_jwt(&req_headers).is_some() {
+        return Err(ApiError::conflict(
+            "local authentication is disabled while Cloudflare Access credentials are present",
+        ));
+    }
     let email = normalize_and_validate_email(&payload.email)?;
     if payload.password.is_empty() || payload.password.len() > 128 {
         // Still run constant-time dummy hash verification so password length

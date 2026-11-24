@@ -269,12 +269,16 @@ impl CfAccessJwksCache {
         }
     }
 
-    fn lookup_cached(state: &JwksCacheState, kid: &str) -> Option<Result<JwkSet, ApiError>> {
+    fn lookup_cached(
+        state: &JwksCacheState,
+        kid: &str,
+        now: Instant,
+    ) -> Option<Result<JwkSet, ApiError>> {
         let in_cooldown = state
             .last_attempt
-            .is_some_and(|t| t.elapsed() < CF_JWKS_REFRESH_COOLDOWN);
+            .is_some_and(|t| now.saturating_duration_since(t) < CF_JWKS_REFRESH_COOLDOWN);
         if let (Some(keys), Some(fetched_at)) = (&state.keys, state.fetched_at) {
-            let fresh = fetched_at.elapsed() < CF_JWKS_TTL;
+            let fresh = now.saturating_duration_since(fetched_at) < CF_JWKS_TTL;
             let has_kid = keys.find(kid).is_some();
             if (fresh && (has_kid || in_cooldown)) || (in_cooldown && has_kid) {
                 return Some(Ok(keys.clone()));
@@ -294,12 +298,23 @@ impl CfAccessJwksCache {
         team_domain: &str,
         kid: &str,
     ) -> Result<JwkSet, ApiError> {
-        if let Some(res) = Self::lookup_cached(&*self.inner.read().await, kid) {
+        self.get_for_kid_at(http, team_domain, kid, Instant::now())
+            .await
+    }
+
+    async fn get_for_kid_at(
+        &self,
+        http: &reqwest::Client,
+        team_domain: &str,
+        kid: &str,
+        now: Instant,
+    ) -> Result<JwkSet, ApiError> {
+        if let Some(res) = Self::lookup_cached(&*self.inner.read().await, kid, now) {
             return res;
         }
 
         let _refresh_guard = self.refresh_lock.lock().await;
-        if let Some(res) = Self::lookup_cached(&*self.inner.read().await, kid) {
+        if let Some(res) = Self::lookup_cached(&*self.inner.read().await, kid, now) {
             return res;
         }
 
@@ -327,7 +342,6 @@ impl CfAccessJwksCache {
         }
         .await;
 
-        let now = Instant::now();
         let mut guard = self.inner.write().await;
         guard.last_attempt = Some(now);
         match fetch_result {
@@ -956,6 +970,43 @@ mod tests {
         );
         assert!(verify_cf_access_jwt(&expired, &jwks, team, aud).is_err());
 
+        // Wrong issuer, missing exp, and future nbf rejected
+        let wrong_iss = sign(
+            serde_json::json!({
+                "aud": [aud],
+                "iss": "https://other.cloudflareaccess.com",
+                "exp": now + 300,
+                "email": "alice@example.com",
+            }),
+            "key-1",
+            &enc_key,
+        );
+        assert!(verify_cf_access_jwt(&wrong_iss, &jwks, team, aud).is_err());
+
+        let missing_exp = sign(
+            serde_json::json!({
+                "aud": [aud],
+                "iss": team,
+                "email": "alice@example.com",
+            }),
+            "key-1",
+            &enc_key,
+        );
+        assert!(verify_cf_access_jwt(&missing_exp, &jwks, team, aud).is_err());
+
+        let future_nbf = sign(
+            serde_json::json!({
+                "aud": [aud],
+                "iss": team,
+                "exp": now + 600,
+                "nbf": now + 300,
+                "email": "alice@example.com",
+            }),
+            "key-1",
+            &enc_key,
+        );
+        assert!(verify_cf_access_jwt(&future_nbf, &jwks, team, aud).is_err());
+
         // Missing email rejected
         let no_email = sign(
             serde_json::json!({
@@ -997,5 +1048,171 @@ mod tests {
         )
         .expect("sign hs256");
         assert!(verify_cf_access_jwt(&hs_token, &jwks, team, aud).is_err());
+    }
+
+    fn make_stub_jwks(kid: &str) -> serde_json::Value {
+        serde_json::json!({
+            "keys": [{
+                "kty": "oct",
+                "kid": kid,
+                "k": "c2VjcmV0"
+            }]
+        })
+    }
+
+    async fn spawn_mock_jwks_server(
+        response: Arc<Mutex<Result<serde_json::Value, axum::http::StatusCode>>>,
+        delay: StdDuration,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use axum::Router;
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_clone = Arc::clone(&hits);
+
+        let app = Router::new().route(
+            "/cdn-cgi/access/certs",
+            get(move || {
+                let hits = Arc::clone(&hits_clone);
+                let response = Arc::clone(&response);
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    match response.lock().unwrap().clone() {
+                        Ok(body) => (StatusCode::OK, axum::Json(body)).into_response(),
+                        Err(status) => status.into_response(),
+                    }
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock JWKS listener");
+        let addr = listener.local_addr().expect("mock JWKS local addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        (format!("http://{addr}"), hits)
+    }
+
+    #[tokio::test]
+    async fn jwks_cache_covers_refresh_cooldown_and_outage_fallback() {
+        use std::sync::atomic::Ordering;
+
+        use axum::http::StatusCode;
+
+        let mock_resp = Arc::new(Mutex::new(Ok(make_stub_jwks("kid-1"))));
+        let (base_url, hits) =
+            spawn_mock_jwks_server(Arc::clone(&mock_resp), StdDuration::ZERO).await;
+        let http = reqwest::Client::new();
+        let cache = CfAccessJwksCache::default();
+        let t0 = Instant::now();
+
+        // 1. Initial retrieval populates cache and subsequent lookup hits cache.
+        let jwks = cache
+            .get_for_kid_at(&http, &base_url, "kid-1", t0)
+            .await
+            .unwrap();
+        assert!(jwks.find("kid-1").is_some());
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let jwks = cache
+            .get_for_kid_at(&http, &base_url, "kid-1", t0 + StdDuration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(jwks.find("kid-1").is_some());
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        // 2. Unknown kid within cooldown returns cached keys without refetching.
+        let jwks = cache
+            .get_for_kid_at(&http, &base_url, "kid-2", t0 + StdDuration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(jwks.find("kid-2").is_none());
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        // 3. Unknown kid after cooldown triggers refresh and picks up rotated key.
+        *mock_resp.lock().unwrap() = Ok(make_stub_jwks("kid-2"));
+        let t1 = t0 + CF_JWKS_REFRESH_COOLDOWN + StdDuration::from_secs(1);
+        let jwks = cache
+            .get_for_kid_at(&http, &base_url, "kid-2", t1)
+            .await
+            .unwrap();
+        assert!(jwks.find("kid-2").is_some());
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+
+        // 4. Expired cache falls back to stale keys when the endpoint fails if kid matches.
+        *mock_resp.lock().unwrap() = Err(StatusCode::INTERNAL_SERVER_ERROR);
+        let t2 = t1 + CF_JWKS_TTL + StdDuration::from_secs(1);
+        let jwks = cache
+            .get_for_kid_at(&http, &base_url, "kid-2", t2)
+            .await
+            .unwrap();
+        assert!(jwks.find("kid-2").is_some());
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+
+        // Within cooldown after failure, stale matching kid is served without refetching.
+        let jwks = cache
+            .get_for_kid_at(&http, &base_url, "kid-2", t2 + StdDuration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(jwks.find("kid-2").is_some());
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+
+        // 5. Endpoint failure without a matching cached key returns an error, and cooldown
+        // suppresses immediate retry.
+        let t3 = t2 + CF_JWKS_REFRESH_COOLDOWN + StdDuration::from_secs(1);
+        assert!(
+            cache
+                .get_for_kid_at(&http, &base_url, "kid-missing", t3)
+                .await
+                .is_err()
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 4);
+
+        assert!(
+            cache
+                .get_for_kid_at(
+                    &http,
+                    &base_url,
+                    "kid-missing",
+                    t3 + StdDuration::from_secs(1)
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn jwks_cache_suppresses_concurrent_refreshes() {
+        use std::sync::atomic::Ordering;
+
+        let mock_resp = Arc::new(Mutex::new(Ok(make_stub_jwks("kid-concurrent"))));
+        let (base_url, hits) =
+            spawn_mock_jwks_server(mock_resp, StdDuration::from_millis(50)).await;
+        let http = reqwest::Client::new();
+        let cache = CfAccessJwksCache::default();
+        let t0 = Instant::now();
+
+        let (r1, r2, r3, r4) = tokio::join!(
+            cache.get_for_kid_at(&http, &base_url, "kid-concurrent", t0),
+            cache.get_for_kid_at(&http, &base_url, "kid-concurrent", t0),
+            cache.get_for_kid_at(&http, &base_url, "kid-concurrent", t0),
+            cache.get_for_kid_at(&http, &base_url, "kid-concurrent", t0),
+        );
+
+        for res in [r1, r2, r3, r4] {
+            assert!(res.unwrap().find("kid-concurrent").is_some());
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 }

@@ -266,6 +266,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Conflicting Cloudflare Access session */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Authentication queue busy */
             429: {
                 headers: {
@@ -384,7 +393,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Email already registered */
+            /** @description Email already registered or conflicting Cloudflare Access session */
             409: {
                 headers: {
                     [name: string]: unknown;
