@@ -258,13 +258,25 @@ struct CfAccessJwksCache {
 }
 
 impl CfAccessJwksCache {
+    fn with_jwks(jwks: JwkSet) -> Self {
+        Self {
+            inner: RwLock::new(JwksCacheState {
+                keys: Some(jwks),
+                fetched_at: Some(Instant::now()),
+                last_attempt: None,
+            }),
+            refresh_lock: AsyncMutex::new(()),
+        }
+    }
+
     fn lookup_cached(state: &JwksCacheState, kid: &str) -> Option<Result<JwkSet, ApiError>> {
         let in_cooldown = state
             .last_attempt
             .is_some_and(|t| t.elapsed() < CF_JWKS_REFRESH_COOLDOWN);
         if let (Some(keys), Some(fetched_at)) = (&state.keys, state.fetched_at) {
             let fresh = fetched_at.elapsed() < CF_JWKS_TTL;
-            if fresh && (keys.find(kid).is_some() || in_cooldown) {
+            let has_kid = keys.find(kid).is_some();
+            if (fresh && (has_kid || in_cooldown)) || (in_cooldown && has_kid) {
                 return Some(Ok(keys.clone()));
             }
         }
@@ -324,7 +336,18 @@ impl CfAccessJwksCache {
                 guard.fetched_at = Some(now);
                 Ok(jwks)
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                if let Some(stale) = &guard.keys
+                    && stale.find(kid).is_some()
+                {
+                    tracing::warn!(
+                        kid,
+                        "serving stale Cloudflare Access JWKS after refresh failure"
+                    );
+                    return Ok(stale.clone());
+                }
+                Err(err)
+            }
         }
     }
 }
@@ -341,6 +364,14 @@ impl CfAccessAuth {
         Self {
             config,
             jwks: Arc::new(CfAccessJwksCache::default()),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    pub fn with_jwks(config: CfAccessConfig, jwks: JwkSet) -> Self {
+        Self {
+            config,
+            jwks: Arc::new(CfAccessJwksCache::with_jwks(jwks)),
             http: reqwest::Client::new(),
         }
     }
@@ -817,6 +848,7 @@ mod tests {
     }
 
     fn make_rsa_jwk_and_key(kid: &str) -> (JwkSet, jsonwebtoken::EncodingKey) {
+        use base64::Engine as _;
         use rsa::RsaPrivateKey;
         use rsa::pkcs8::EncodePrivateKey;
         use rsa::traits::PublicKeyParts;
@@ -829,8 +861,8 @@ mod tests {
         let encoding_key =
             jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes()).expect("encoding key");
 
-        let n = base64_url_no_pad(&priv_key.n().to_bytes_be());
-        let e = base64_url_no_pad(&priv_key.e().to_bytes_be());
+        let n = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(priv_key.n().to_bytes_be());
+        let e = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(priv_key.e().to_bytes_be());
         let jwks: JwkSet = serde_json::from_value(serde_json::json!({
             "keys": [{
                 "kty": "RSA",
@@ -843,27 +875,6 @@ mod tests {
         }))
         .expect("parse JwkSet");
         (jwks, encoding_key)
-    }
-
-    fn base64_url_no_pad(bytes: &[u8]) -> String {
-        const TABLE: &[u8; 64] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-        let mut out = String::with_capacity((bytes.len() * 4).div_ceil(3));
-        for chunk in bytes.chunks(3) {
-            let b0 = chunk[0] as u32;
-            let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-            let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-            let triple = (b0 << 16) | (b1 << 8) | b2;
-            out.push(TABLE[((triple >> 18) & 0x3f) as usize] as char);
-            out.push(TABLE[((triple >> 12) & 0x3f) as usize] as char);
-            if chunk.len() > 1 {
-                out.push(TABLE[((triple >> 6) & 0x3f) as usize] as char);
-            }
-            if chunk.len() > 2 {
-                out.push(TABLE[(triple & 0x3f) as usize] as char);
-            }
-        }
-        out
     }
 
     #[test]
