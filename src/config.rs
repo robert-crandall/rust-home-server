@@ -16,7 +16,7 @@ pub struct Config {
     pub secure_cookies: bool,
     pub allow_open_registration: bool,
     pub cf_access: Option<CfAccessConfig>,
-    pub household_dir: Option<PathBuf>,
+    pub household_users_file: Option<PathBuf>,
 }
 
 impl Config {
@@ -105,8 +105,8 @@ impl Config {
             }
         };
 
-        let household_dir = vars
-            .get("HOUSEHOLD_DIR")
+        let household_users_file = vars
+            .get("HOUSEHOLD_USERS_FILE")
             .map(|v| v.trim())
             .filter(|v| !v.is_empty())
             .map(PathBuf::from);
@@ -117,7 +117,7 @@ impl Config {
             secure_cookies,
             allow_open_registration,
             cf_access,
-            household_dir,
+            household_users_file,
         })
     }
 }
@@ -232,18 +232,21 @@ mod tests {
     }
 
     #[test]
-    fn parses_optional_household_dir() {
+    fn parses_optional_household_users_file() {
         let mut vars = BTreeMap::new();
         vars.insert(
             "DATABASE_URL".into(),
             "postgres://localhost/rust_home_server".into(),
         );
-        assert_eq!(Config::from_map(&vars).unwrap().household_dir, None);
+        assert_eq!(Config::from_map(&vars).unwrap().household_users_file, None);
 
-        vars.insert("HOUSEHOLD_DIR".into(), "  /etc/household  ".into());
+        vars.insert(
+            "HOUSEHOLD_USERS_FILE".into(),
+            "  /etc/household/users.yaml  ".into(),
+        );
         assert_eq!(
-            Config::from_map(&vars).unwrap().household_dir,
-            Some(PathBuf::from("/etc/household"))
+            Config::from_map(&vars).unwrap().household_users_file,
+            Some(PathBuf::from("/etc/household/users.yaml"))
         );
     }
 }

@@ -50,7 +50,7 @@ async fn main() -> ExitCode {
         secure_cookies: cfg.secure_cookies,
         allow_open_registration: cfg.allow_open_registration,
         cf_access: cfg.cf_access.map(CfAccessAuth::new),
-        household: cfg.household_dir.map(HouseholdProfiles::new),
+        household: cfg.household_users_file.map(HouseholdProfiles::new),
     })
     .fallback(serve_spa);
 

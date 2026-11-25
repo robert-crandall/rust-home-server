@@ -547,7 +547,7 @@ async fn get_user_avatar(
             ),
             (X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
         ],
-        asset.bytes,
+        asset.bytes.clone(),
     )
         .into_response())
 }

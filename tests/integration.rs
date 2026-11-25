@@ -1413,16 +1413,21 @@ async fn cloudflare_access_auth_provisioning_and_logout_flow() {
 
 #[tokio::test]
 async fn household_profiles_override_name_and_serve_authenticated_avatars() {
+    use base64::Engine as _;
+
     let Some(tdb) = TestDb::setup().await else {
         return;
     };
 
     let household_dir = tempfile::tempdir().expect("household tempdir");
     let png_bytes = b"\x89PNG\r\n\x1a\nhousehold-avatar";
-    std::fs::write(household_dir.path().join("robert.png"), png_bytes).unwrap();
+    let png_b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes);
+    let yaml_path = household_dir.path().join("users.yaml");
     std::fs::write(
-        household_dir.path().join("users.yaml"),
-        "users:\n  robert@example.com:\n    name: Robert Crandall\n    avatar: robert.png\n",
+        &yaml_path,
+        format!(
+            "users:\n  robert@example.com:\n    name: Robert Crandall\n    avatar: \"data:image/png;base64,{png_b64}\"\n"
+        ),
     )
     .unwrap();
 
@@ -1431,9 +1436,7 @@ async fn household_profiles_override_name_and_serve_authenticated_avatars() {
         secure_cookies: false,
         allow_open_registration: true,
         cf_access: None,
-        household: Some(app::household::HouseholdProfiles::new(
-            household_dir.path().to_path_buf(),
-        )),
+        household: Some(app::household::HouseholdProfiles::new(yaml_path)),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
