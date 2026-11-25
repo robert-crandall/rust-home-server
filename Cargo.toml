@@ -24,6 +24,7 @@ path = "src/bin/mcp.rs"
 [dependencies]
 argon2 = { version = "0.5", features = ["std"] }
 axum = { version = "0.8", features = ["macros"] }
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
 hex = "0.4"
@@ -36,6 +37,7 @@ rust-embed = "8"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml_ng = "0.10"
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio-rustls", "uuid"] }
 subtle = "2"
@@ -48,7 +50,6 @@ utoipa-axum = "0.3"
 uuid = { version = "1", features = ["serde", "v4"] }
 
 [dev-dependencies]
-base64 = "0.22"
 rsa = { version = "0.9", features = ["pem"] }
 tempfile = "3"
 

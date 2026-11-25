@@ -3,8 +3,10 @@ use std::time::Duration;
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State};
-use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::header::{
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, COOKIE, SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
+};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
@@ -23,12 +25,24 @@ use crate::auth::{
     validate_password, verify_password,
 };
 
+use crate::household::HouseholdProfiles;
+
 #[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
     pub secure_cookies: bool,
     pub allow_open_registration: bool,
     pub cf_access: Option<CfAccessAuth>,
+    pub household: Option<HouseholdProfiles>,
+}
+
+impl AppState {
+    pub async fn hydrate_user(&self, user: User) -> User {
+        match &self.household {
+            Some(household) => household.apply_to_user_async(user).await,
+            None => user,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
@@ -191,6 +205,7 @@ pub fn build_openapi_router() -> OpenApiRouter<AppState> {
         .routes(routes!(login))
         .routes(routes!(logout))
         .routes(routes!(me))
+        .routes(routes!(get_user_avatar))
         .routes(routes!(list_tokens, create_token))
         .routes(routes!(delete_token))
 }
@@ -298,7 +313,20 @@ async fn register(
     }
     let email = normalize_and_validate_email(&payload.email)?;
     validate_password(&payload.password)?;
-    let name = normalize_display_name(payload.name.as_deref(), &email)?;
+    let requested_name = payload
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty());
+    let household_name = if requested_name.is_none() {
+        match &state.household {
+            Some(h) => h.display_name_for_async(email.clone()).await,
+            None => None,
+        }
+    } else {
+        None
+    };
+    let name = normalize_display_name(requested_name.or(household_name.as_deref()), &email)?;
 
     // Reject closed registration before scheduling Argon2 work; the advisory-locked
     // check inside `register_user_with_session` remains authoritative for first-user races.
@@ -315,6 +343,7 @@ async fn register(
         &name,
     )
     .await?;
+    let user = state.hydrate_user(user).await;
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -388,8 +417,10 @@ async fn login(
         id: row.id,
         email: row.email,
         name: row.name,
+        avatar_url: None,
         created_at: row.created_at,
     };
+    let user = state.hydrate_user(user).await;
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -459,6 +490,64 @@ async fn logout(
 )]
 async fn me(AuthenticatedUser(user): AuthenticatedUser) -> Json<User> {
     Json(user)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/users/{id}/avatar",
+    tag = "auth",
+    params(
+        ("id" = Uuid, Path, description = "User ID")
+    ),
+    security(
+        ("sessionCookie" = []),
+        ("bearerToken" = [])
+    ),
+    responses(
+        (status = 200, description = "User avatar image", content_type = "image/*"),
+        (status = 401, description = "Not signed in", body = ErrorBody),
+        (status = 404, description = "User or avatar not found", body = ErrorBody)
+    )
+)]
+async fn get_user_avatar(
+    State(state): State<AppState>,
+    AuthenticatedUser(_viewer): AuthenticatedUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let Some(household) = state.household.clone() else {
+        return Err(ApiError::not_found("avatar not found"));
+    };
+
+    let Some(email) = sqlx::query_scalar::<_, String>("SELECT email FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|err| {
+            tracing::error!(?err, "failed to look up user for avatar");
+            ApiError::internal("failed to load avatar")
+        })?
+    else {
+        return Err(ApiError::not_found("avatar not found"));
+    };
+
+    let asset = household
+        .load_avatar_async(email)
+        .await
+        .ok_or_else(|| ApiError::not_found("avatar not found"))?;
+
+    Ok((
+        StatusCode::OK,
+        [
+            (CONTENT_TYPE, HeaderValue::from_static(asset.content_type)),
+            (
+                CACHE_CONTROL,
+                HeaderValue::from_static("private, max-age=3600"),
+            ),
+            (X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
+        ],
+        asset.bytes.clone(),
+    )
+        .into_response())
 }
 
 #[utoipa::path(

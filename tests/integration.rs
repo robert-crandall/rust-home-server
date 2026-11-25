@@ -560,6 +560,7 @@ async fn spawn_in_process_server(pool: PgPool, allow_open_registration: bool) ->
         secure_cookies: false,
         allow_open_registration,
         cf_access: None,
+        household: None,
     };
     let app = build_router(state);
     tokio::spawn(async move {
@@ -1182,6 +1183,17 @@ async fn cloudflare_access_auth_provisioning_and_logout_flow() {
         .expect("sign CF Access JWT")
     };
 
+    let household_dir = tempfile::tempdir().expect("household tempdir");
+    let png_b64 = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\ncf-avatar");
+    let yaml_path = household_dir.path().join("users.yaml");
+    std::fs::write(
+        &yaml_path,
+        format!(
+            "users:\n  alice@example.com:\n    name: Alice Household\n    avatar: \"data:image/png;base64,{png_b64}\"\n"
+        ),
+    )
+    .unwrap();
+
     let cf_auth = app::auth::CfAccessAuth::with_jwks(
         app::config::CfAccessConfig {
             team_domain: team_domain.to_string(),
@@ -1194,6 +1206,7 @@ async fn cloudflare_access_auth_provisioning_and_logout_flow() {
         secure_cookies: false,
         allow_open_registration: false,
         cf_access: Some(cf_auth),
+        household: Some(app::household::HouseholdProfiles::new(yaml_path.clone())),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1274,6 +1287,19 @@ async fn cloudflare_access_auth_provisioning_and_logout_flow() {
     let u2: Value = r2.json().await.unwrap();
     assert_eq!(u1["id"], u2["id"]);
     assert_eq!(u1["email"], "alice@example.com");
+    assert_eq!(u1["name"], "Alice Household");
+    let alice_id = u1["id"].as_str().expect("alice id");
+    assert!(
+        u1["avatarUrl"]
+            .as_str()
+            .is_some_and(|url| url.starts_with(&format!("/api/users/{alice_id}/avatar")))
+    );
+    let stored_alice_name = sqlx::query_scalar::<_, String>("SELECT name FROM users WHERE id = $1")
+        .bind(Uuid::parse_str(alice_id).unwrap())
+        .fetch_one(&tdb.pool)
+        .await
+        .unwrap();
+    assert_eq!(stored_alice_name, "Alice Household");
 
     // CF Access user can mint a PAT via SessionUser and Bearer PAT takes precedence over CF JWT
     let minted: Value = client
@@ -1387,6 +1413,31 @@ async fn cloudflare_access_auth_provisioning_and_logout_flow() {
     let cookie_user: Value = cookie_me.json().await.unwrap();
     assert_eq!(cookie_user["email"], "alice@example.com");
 
+    // Subsequent CF authentication reflects manifest updates without rewriting the stored DB name
+    std::fs::write(
+        &yaml_path,
+        "users:\n  alice@example.com:\n    name: Alice Updated\n",
+    )
+    .unwrap();
+    let updated_cf_me: Value = client
+        .get(format!("{base_url}/api/auth/me"))
+        .header("Cf-Access-Jwt-Assertion", &jwt)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(updated_cf_me["name"], "Alice Updated");
+    assert!(updated_cf_me["avatarUrl"].is_null());
+    let stored_alice_name_after =
+        sqlx::query_scalar::<_, String>("SELECT name FROM users WHERE id = $1")
+            .bind(Uuid::parse_str(alice_id).unwrap())
+            .fetch_one(&tdb.pool)
+            .await
+            .unwrap();
+    assert_eq!(stored_alice_name_after, "Alice Household");
+
     // Invalid CF JWT must not fall back to a valid local session cookie
     let local_session = app::auth::create_session(
         &tdb.pool,
@@ -1405,6 +1456,173 @@ async fn cloudflare_access_auth_provisioning_and_logout_flow() {
         .await
         .unwrap();
     assert_eq!(bad_cf_with_session.status(), StatusCode::UNAUTHORIZED);
+
+    tdb.teardown().await;
+}
+
+#[tokio::test]
+async fn household_profiles_override_name_and_serve_authenticated_avatars() {
+    use base64::Engine as _;
+
+    let Some(tdb) = TestDb::setup().await else {
+        return;
+    };
+
+    let household_dir = tempfile::tempdir().expect("household tempdir");
+    let png_bytes = b"\x89PNG\r\n\x1a\nhousehold-avatar";
+    let png_b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes);
+    let yaml_path = household_dir.path().join("users.yaml");
+    std::fs::write(
+        &yaml_path,
+        format!(
+            "users:\n  robert@example.com:\n    name: Robert Crandall\n    avatar: \"data:image/png;base64,{png_b64}\"\n"
+        ),
+    )
+    .unwrap();
+
+    let state = AppState {
+        pool: tdb.pool.clone(),
+        secure_cookies: false,
+        allow_open_registration: true,
+        cf_access: None,
+        household: Some(app::household::HouseholdProfiles::new(yaml_path.clone())),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, build_router(state)).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+
+    let authed = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .unwrap();
+    let anon = reqwest::Client::new();
+
+    let reg = authed
+        .post(format!("{base_url}/api/auth/register"))
+        .json(&json!({
+            "email": "robert@example.com",
+            "password": "very-strong-passphrase"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reg.status(), StatusCode::CREATED);
+    let user: Value = reg.json().await.unwrap();
+    let user_id = user["id"].as_str().expect("user id");
+    assert_eq!(user["name"], "Robert Crandall");
+    let avatar_url = user["avatarUrl"].as_str().expect("avatarUrl");
+    assert!(avatar_url.starts_with(&format!("/api/users/{user_id}/avatar")));
+
+    // Password login also returns hydrated household name and avatarUrl
+    let login_resp = anon
+        .post(format!("{base_url}/api/auth/login"))
+        .json(&json!({
+            "email": "robert@example.com",
+            "password": "very-strong-passphrase"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login_resp.status(), StatusCode::OK);
+    let login_user: Value = login_resp.json().await.unwrap();
+    assert_eq!(login_user["name"], "Robert Crandall");
+    assert_eq!(login_user["avatarUrl"], avatar_url);
+
+    // Unauthenticated callers cannot fetch avatars
+    let unauth_resp = anon
+        .get(format!("{base_url}{avatar_url}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauth_resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Authenticated callers receive the avatar image with nosniff header
+    let avatar_resp = authed
+        .get(format!("{base_url}{avatar_url}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(avatar_resp.status(), StatusCode::OK);
+    assert_eq!(
+        avatar_resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("image/png")
+    );
+    assert_eq!(
+        avatar_resp
+            .headers()
+            .get(reqwest::header::X_CONTENT_TYPE_OPTIONS)
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    assert_eq!(avatar_resp.bytes().await.unwrap().as_ref(), png_bytes);
+
+    // Bearer tokens also receive hydrated household profiles and can fetch avatars
+    let tok_resp = authed
+        .post(format!("{base_url}/api/tokens"))
+        .json(&json!({ "name": "household-pat" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tok_resp.status(), StatusCode::CREATED);
+    let tok_body: Value = tok_resp.json().await.unwrap();
+    let bearer = format!("Bearer {}", tok_body["token"].as_str().unwrap());
+
+    let pat_me = anon
+        .get(format!("{base_url}/api/auth/me"))
+        .header(reqwest::header::AUTHORIZATION, &bearer)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pat_me.status(), StatusCode::OK);
+    let pat_user: Value = pat_me.json().await.unwrap();
+    assert_eq!(pat_user["name"], "Robert Crandall");
+    assert_eq!(pat_user["avatarUrl"], avatar_url);
+
+    let pat_avatar = anon
+        .get(format!("{base_url}{avatar_url}"))
+        .header(reqwest::header::AUTHORIZATION, &bearer)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pat_avatar.status(), StatusCode::OK);
+    assert_eq!(pat_avatar.bytes().await.unwrap().as_ref(), png_bytes);
+
+    // Updating users.yaml hot-reloads on /api/auth/me without changing the DB row
+    std::fs::write(
+        &yaml_path,
+        "users:\n  robert@example.com:\n    name: Bobby\n",
+    )
+    .unwrap();
+    let me_resp = authed
+        .get(format!("{base_url}/api/auth/me"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me_resp.status(), StatusCode::OK);
+    let me_user: Value = me_resp.json().await.unwrap();
+    assert_eq!(me_user["name"], "Bobby");
+    assert!(me_user["avatarUrl"].is_null());
+
+    // Previously issued avatar URL now returns 404 after removal
+    let removed_avatar_resp = authed
+        .get(format!("{base_url}{avatar_url}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(removed_avatar_resp.status(), StatusCode::NOT_FOUND);
+
+    let stored_name = sqlx::query_scalar::<_, String>("SELECT name FROM users WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(user_id).unwrap())
+        .fetch_one(&tdb.pool)
+        .await
+        .unwrap();
+    assert_eq!(stored_name, "Robert Crandall");
 
     tdb.teardown().await;
 }

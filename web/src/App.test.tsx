@@ -603,4 +603,55 @@ describe("Rust Home Server SPA foundation", () => {
       });
     }
   });
+
+  it("renders the household avatar image when avatarUrl is set and initials fallback otherwise", async () => {
+    currentUser = {
+      id: "00000000-0000-0000-0000-000000000010",
+      email: "robert@example.com",
+      name: "Robert Crandall",
+      avatarUrl: "/api/users/00000000-0000-0000-0000-000000000010/avatar?v=42",
+      createdAt: "2026-04-20T00:00:00Z",
+    };
+
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    dispose = render(() => <App />, host);
+
+    await waitFor(() => {
+      const img = host.querySelector(".user-avatar") as HTMLImageElement | null;
+      expect(img).not.toBeNull();
+      expect(img?.getAttribute("src")).toBe(
+        "/api/users/00000000-0000-0000-0000-000000000010/avatar?v=42",
+      );
+      expect(host.querySelector(".user-avatar-fallback")).toBeNull();
+    });
+
+    // If the avatar fails to load, fall back to initials instead of showing a broken image
+    const img = host.querySelector(".user-avatar") as HTMLImageElement;
+    img.dispatchEvent(new Event("error"));
+    await waitFor(() => {
+      expect(host.querySelector(".user-avatar")).toBeNull();
+      expect(host.querySelector(".user-avatar-fallback")?.textContent).toBe("RC");
+    });
+
+    dispose();
+    host.remove();
+
+    currentUser = {
+      id: "00000000-0000-0000-0000-000000000011",
+      email: "alex@example.com",
+      name: "Alex Rivera",
+      avatarUrl: null,
+      createdAt: "2026-04-20T00:00:00Z",
+    };
+
+    const host2 = document.createElement("div");
+    document.body.appendChild(host2);
+    dispose = render(() => <App />, host2);
+
+    await waitFor(() => {
+      expect(host2.querySelector(".user-avatar")).toBeNull();
+      expect(host2.querySelector(".user-avatar-fallback")?.textContent).toBe("AR");
+    });
+  });
 });
