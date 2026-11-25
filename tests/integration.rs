@@ -559,6 +559,7 @@ async fn spawn_in_process_server(pool: PgPool, allow_open_registration: bool) ->
         pool,
         secure_cookies: false,
         allow_open_registration,
+        cf_access: None,
     };
     let app = build_router(state);
     tokio::spawn(async move {
@@ -604,7 +605,10 @@ async fn multi_user_auth_csrf_and_tokens_flow() {
         .json()
         .await
         .unwrap();
-    assert_eq!(app_info, json!({ "registrationOpen": true }));
+    assert_eq!(
+        app_info,
+        json!({ "registrationOpen": true, "cloudflareAccessEnabled": false })
+    );
 
     // 2. Register two users; duplicate email (case-insensitive) fails with 409
     let reg_a = client_a
@@ -857,7 +861,10 @@ async fn closed_registration_allows_only_bootstrap_user() {
         .json()
         .await
         .unwrap();
-    assert_eq!(before, json!({ "registrationOpen": true }));
+    assert_eq!(
+        before,
+        json!({ "registrationOpen": true, "cloudflareAccessEnabled": false })
+    );
 
     // Race two simultaneous registrations against ALLOW_OPEN_REGISTRATION=false
     let fut1 = client
@@ -888,7 +895,10 @@ async fn closed_registration_allows_only_bootstrap_user() {
         .json()
         .await
         .unwrap();
-    assert_eq!(after, json!({ "registrationOpen": false }));
+    assert_eq!(
+        after,
+        json!({ "registrationOpen": false, "cloudflareAccessEnabled": false })
+    );
 
     tdb.teardown().await;
 }
@@ -1115,5 +1125,286 @@ async fn binaries_spa_healthcheck_and_mcp_stdio_end_to_end() {
     let _ = mcp_child.kill().await;
     let _ = std::fs::remove_dir_all(&temp_dir);
     let _ = server_child.kill().await;
+    tdb.teardown().await;
+}
+
+#[tokio::test]
+async fn cloudflare_access_auth_provisioning_and_logout_flow() {
+    use base64::Engine as _;
+    use rsa::RsaPrivateKey;
+    use rsa::pkcs8::EncodePrivateKey;
+    use rsa::traits::PublicKeyParts;
+
+    let Some(tdb) = TestDb::setup().await else {
+        return;
+    };
+
+    let team_domain = "https://household.cloudflareaccess.com";
+    let aud = "test-cf-aud";
+    let kid = "cf-test-key";
+
+    let mut rng = rsa::rand_core::OsRng;
+    let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("generate RSA key");
+    let pem = priv_key
+        .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+        .expect("encode PEM");
+    let encoding_key =
+        jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes()).expect("encoding key");
+    let n = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(priv_key.n().to_bytes_be());
+    let e = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(priv_key.e().to_bytes_be());
+    let jwks: jsonwebtoken::jwk::JwkSet = serde_json::from_value(json!({
+        "keys": [{
+            "kty": "RSA",
+            "alg": "RS256",
+            "use": "sig",
+            "kid": kid,
+            "n": n,
+            "e": e,
+        }]
+    }))
+    .expect("parse JwkSet");
+
+    let sign_jwt = |email: &str| {
+        let now = chrono::Utc::now().timestamp();
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some(kid.to_string());
+        jsonwebtoken::encode(
+            &header,
+            &json!({
+                "email": email,
+                "iss": team_domain,
+                "aud": [aud],
+                "exp": now + 300,
+                "nbf": now - 10,
+            }),
+            &encoding_key,
+        )
+        .expect("sign CF Access JWT")
+    };
+
+    let cf_auth = app::auth::CfAccessAuth::with_jwks(
+        app::config::CfAccessConfig {
+            team_domain: team_domain.to_string(),
+            aud: aud.to_string(),
+        },
+        jwks,
+    );
+    let state = AppState {
+        pool: tdb.pool.clone(),
+        secure_cookies: false,
+        allow_open_registration: false,
+        cf_access: Some(cf_auth),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, build_router(state)).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    let app_info: Value = client
+        .get(format!("{base_url}/api/app"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        app_info,
+        json!({ "registrationOpen": true, "cloudflareAccessEnabled": true })
+    );
+
+    // Pre-existing password-backed user links by email (case-insensitively) without losing
+    // their display name or password login.
+    let existing_reg = client
+        .post(format!("{base_url}/api/auth/register"))
+        .json(&json!({
+            "email": "carol@example.com",
+            "password": "carol-strong-passphrase",
+            "name": "Carol Custom"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(existing_reg.status(), StatusCode::CREATED);
+    let carol_local: Value = existing_reg.json().await.unwrap();
+
+    let carol_jwt = sign_jwt("Carol@Example.com");
+    let carol_cf: Value = client
+        .get(format!("{base_url}/api/auth/me"))
+        .header("Cf-Access-Jwt-Assertion", &carol_jwt)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(carol_cf["id"], carol_local["id"]);
+    assert_eq!(carol_cf["name"], "Carol Custom");
+
+    let carol_relogin = client
+        .post(format!("{base_url}/api/auth/login"))
+        .json(&json!({
+            "email": "carol@example.com",
+            "password": "carol-strong-passphrase"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(carol_relogin.status(), StatusCode::OK);
+
+    // Race two concurrent first requests to verify ON CONFLICT auto-provisioning
+    let jwt = sign_jwt("Alice@Example.com");
+    let req1 = client
+        .get(format!("{base_url}/api/auth/me"))
+        .header("Cf-Access-Jwt-Assertion", &jwt)
+        .send();
+    let req2 = client
+        .get(format!("{base_url}/api/auth/me"))
+        .header("Cf-Access-Jwt-Assertion", &jwt)
+        .send();
+    let (r1, r2) = tokio::join!(req1, req2);
+    let r1 = r1.unwrap();
+    let r2 = r2.unwrap();
+    assert_eq!(r1.status(), StatusCode::OK);
+    assert_eq!(r2.status(), StatusCode::OK);
+    let u1: Value = r1.json().await.unwrap();
+    let u2: Value = r2.json().await.unwrap();
+    assert_eq!(u1["id"], u2["id"]);
+    assert_eq!(u1["email"], "alice@example.com");
+
+    // CF Access user can mint a PAT via SessionUser and Bearer PAT takes precedence over CF JWT
+    let minted: Value = client
+        .post(format!("{base_url}/api/tokens"))
+        .header("Cf-Access-Jwt-Assertion", &jwt)
+        .json(&json!({ "name": "cf-mcp" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pat = minted["token"].as_str().expect("minted PAT");
+    let other_jwt = sign_jwt("bob@example.com");
+    let bearer_me: Value = client
+        .get(format!("{base_url}/api/auth/me"))
+        .header("Authorization", format!("Bearer {pat}"))
+        .header("Cf-Access-Jwt-Assertion", &other_jwt)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(bearer_me["email"], "alice@example.com");
+
+    // Logout with CF Access JWT returns 200 with Cloudflare logoutUrl
+    let cf_logout = client
+        .post(format!("{base_url}/api/auth/logout"))
+        .header("Cf-Access-Jwt-Assertion", &jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cf_logout.status(), StatusCode::OK);
+    let cf_logout_body: Value = cf_logout.json().await.unwrap();
+    assert_eq!(
+        cf_logout_body,
+        json!({ "logoutUrl": "/cdn-cgi/access/logout" })
+    );
+
+    // Logout without CF Access JWT returns 200 with logoutUrl: null
+    let plain_logout = client
+        .post(format!("{base_url}/api/auth/logout"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(plain_logout.status(), StatusCode::OK);
+    let plain_logout_body: Value = plain_logout.json().await.unwrap();
+    assert_eq!(plain_logout_body, json!({ "logoutUrl": null }));
+
+    // Local login and registration are rejected while Cloudflare Access credentials are present
+    let conflict_login = client
+        .post(format!("{base_url}/api/auth/login"))
+        .header("Cf-Access-Jwt-Assertion", &jwt)
+        .json(&json!({
+            "email": "bob@example.com",
+            "password": "bob-strong-passphrase"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict_login.status(), StatusCode::CONFLICT);
+    assert!(conflict_login.headers().get("set-cookie").is_none());
+
+    let conflict_login_cookie = client
+        .post(format!("{base_url}/api/auth/login"))
+        .header(COOKIE, format!("CF_Authorization={jwt}"))
+        .json(&json!({
+            "email": "bob@example.com",
+            "password": "bob-strong-passphrase"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict_login_cookie.status(), StatusCode::CONFLICT);
+
+    let conflict_register = client
+        .post(format!("{base_url}/api/auth/register"))
+        .header("Cf-Access-Jwt-Assertion", &jwt)
+        .json(&json!({
+            "email": "bob@example.com",
+            "password": "bob-strong-passphrase"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict_register.status(), StatusCode::CONFLICT);
+    assert!(conflict_register.headers().get("set-cookie").is_none());
+
+    // Passwordless CF-provisioned user cannot sign in locally without a password
+    let passwordless_login = client
+        .post(format!("{base_url}/api/auth/login"))
+        .json(&json!({
+            "email": "alice@example.com",
+            "password": "any-attempted-password"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(passwordless_login.status(), StatusCode::UNAUTHORIZED);
+    assert!(passwordless_login.headers().get("set-cookie").is_none());
+
+    // Cookie-only CF_Authorization authenticates browser requests
+    let cookie_me = client
+        .get(format!("{base_url}/api/auth/me"))
+        .header(COOKIE, format!("CF_Authorization={jwt}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cookie_me.status(), StatusCode::OK);
+    let cookie_user: Value = cookie_me.json().await.unwrap();
+    assert_eq!(cookie_user["email"], "alice@example.com");
+
+    // Invalid CF JWT must not fall back to a valid local session cookie
+    let local_session = app::auth::create_session(
+        &tdb.pool,
+        Uuid::parse_str(u1["id"].as_str().unwrap()).unwrap(),
+    )
+    .await
+    .unwrap();
+    let bad_cf_with_session = client
+        .get(format!("{base_url}/api/auth/me"))
+        .header(
+            COOKIE,
+            format!("{}={local_session}", app::auth::SESSION_COOKIE_NAME),
+        )
+        .header("Cf-Access-Jwt-Assertion", "not-a-valid-jwt")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_cf_with_session.status(), StatusCode::UNAUTHORIZED);
+
     tdb.teardown().await;
 }

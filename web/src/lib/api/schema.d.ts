@@ -147,6 +147,7 @@ export interface components {
             name: string;
         };
         AppInfo: {
+            cloudflareAccessEnabled: boolean;
             registrationOpen: boolean;
         };
         CreateTokenRequest: {
@@ -170,6 +171,9 @@ export interface components {
         LoginRequest: {
             email: string;
             password: string;
+        };
+        LogoutResponse: {
+            logoutUrl?: string | null;
         };
         RegisterRequest: {
             email: string;
@@ -262,6 +266,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Conflicting Cloudflare Access session */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Authentication queue busy */
             429: {
                 headers: {
@@ -283,11 +296,13 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Signed out */
-            204: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["LogoutResponse"];
+                };
             };
             /** @description Cross-origin or non-browser request rejected */
             403: {
@@ -378,7 +393,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Email already registered */
+            /** @description Email already registered or conflicting Cloudflare Access session */
             409: {
                 headers: {
                     [name: string]: unknown;

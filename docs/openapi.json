@@ -86,6 +86,16 @@
               }
             }
           },
+          "409": {
+            "description": "Conflicting Cloudflare Access session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Authentication queue busy",
             "content": {
@@ -106,8 +116,15 @@
         ],
         "operationId": "logout",
         "responses": {
-          "204": {
-            "description": "Signed out"
+          "200": {
+            "description": "Signed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "Cross-origin or non-browser request rejected",
@@ -218,7 +235,7 @@
             }
           },
           "409": {
-            "description": "Email already registered",
+            "description": "Email already registered or conflicting Cloudflare Access session",
             "content": {
               "application/json": {
                 "schema": {
@@ -479,9 +496,13 @@
       "AppInfo": {
         "type": "object",
         "required": [
-          "registrationOpen"
+          "registrationOpen",
+          "cloudflareAccessEnabled"
         ],
         "properties": {
+          "cloudflareAccessEnabled": {
+            "type": "boolean"
+          },
           "registrationOpen": {
             "type": "boolean"
           }
@@ -561,6 +582,17 @@
           },
           "password": {
             "type": "string"
+          }
+        }
+      },
+      "LogoutResponse": {
+        "type": "object",
+        "properties": {
+          "logoutUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

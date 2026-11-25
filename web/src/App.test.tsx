@@ -36,6 +36,8 @@ function setInputValue(input: HTMLInputElement, value: string) {
 describe("Rust Home Server SPA foundation", () => {
   let currentUser: User | null;
   let registrationOpen: boolean;
+  let cloudflareAccessEnabled: boolean;
+  let logoutUrl: string | null;
   let tokens: ApiToken[];
   let tokenLoads: number;
   let failAppBootstrap: boolean;
@@ -49,6 +51,8 @@ describe("Rust Home Server SPA foundation", () => {
   beforeEach(() => {
     currentUser = null;
     registrationOpen = true;
+    cloudflareAccessEnabled = false;
+    logoutUrl = null;
     tokens = [];
     tokenLoads = 0;
     failAppBootstrap = false;
@@ -85,7 +89,7 @@ describe("Rust Home Server SPA foundation", () => {
         if (failAppBootstrap) {
           throw new TypeError("Failed to fetch");
         }
-        return jsonResponse({ registrationOpen });
+        return jsonResponse({ registrationOpen, cloudflareAccessEnabled });
       }
 
       if (url.pathname === "/api/auth/me" && method === "GET") {
@@ -132,7 +136,7 @@ describe("Rust Home Server SPA foundation", () => {
           return jsonResponse({ error: "session store unavailable" }, 500);
         }
         currentUser = null;
-        return new Response(null, { status: 204 });
+        return jsonResponse({ logoutUrl });
       }
 
       if (url.pathname === "/api/tokens" && method === "GET") {
@@ -542,5 +546,61 @@ describe("Rust Home Server SPA foundation", () => {
     expect(
       Array.from(host.querySelectorAll(".token-name")).map((el) => el.textContent),
     ).toEqual(["fresh-token"]);
+  });
+
+  it("shows Cloudflare Access login link when enabled and redirects to logoutUrl on sign-out", async () => {
+    cloudflareAccessEnabled = true;
+
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    dispose = render(() => <App />, host);
+
+    await waitFor(() => {
+      const link = host.querySelector(
+        'a[href="/cdn-cgi/access/login"]',
+      ) as HTMLAnchorElement | null;
+      expect(link?.textContent).toBe("Sign in with Cloudflare Access");
+    });
+
+    dispose();
+    host.remove();
+
+    currentUser = {
+      id: "00000000-0000-0000-0000-000000000003",
+      email: "cf@example.com",
+      name: "cf",
+      createdAt: "2026-04-20T00:00:00Z",
+    };
+    logoutUrl = "/cdn-cgi/access/logout";
+    const assignSpy = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, assign: assignSpy },
+    });
+
+    try {
+      const host2 = document.createElement("div");
+      document.body.appendChild(host2);
+      dispose = render(() => <App />, host2);
+
+      await waitFor(() => {
+        expect(host2.textContent).toContain("Signed in as cf");
+      });
+
+      const signOutBtn = Array.from(host2.querySelectorAll("button")).find(
+        (btn) => btn.textContent === "Sign out",
+      );
+      signOutBtn!.click();
+
+      await waitFor(() => {
+        expect(assignSpy).toHaveBeenCalledWith("/cdn-cgi/access/logout");
+      });
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
   });
 });

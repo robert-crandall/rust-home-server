@@ -12,6 +12,7 @@ export interface AuthStore {
   ready: Accessor<boolean>;
   user: Accessor<User | null>;
   registrationOpen: Accessor<boolean>;
+  cloudflareAccessEnabled: Accessor<boolean>;
   login: (input: LoginRequest) => Promise<{ error?: string }>;
   register: (input: RegisterRequest) => Promise<{ error?: string }>;
   logout: () => Promise<{ error?: string }>;
@@ -23,6 +24,8 @@ export function AuthProvider(props: { children: JSX.Element }) {
   const [ready, setReady] = createSignal(false);
   const [user, setUser] = createSignal<User | null>(null);
   const [registrationOpen, setRegistrationOpen] = createSignal(false);
+  const [cloudflareAccessEnabled, setCloudflareAccessEnabled] =
+    createSignal(false);
 
   async function refreshBootstrap() {
     const [appRes, meRes] = await Promise.allSettled([
@@ -31,6 +34,7 @@ export function AuthProvider(props: { children: JSX.Element }) {
     ]);
     if (appRes.status === "fulfilled" && appRes.value.data) {
       setRegistrationOpen(appRes.value.data.registrationOpen);
+      setCloudflareAccessEnabled(appRes.value.data.cloudflareAccessEnabled);
     }
     setUser(meRes.status === "fulfilled" ? (meRes.value.data ?? null) : null);
     setReady(true);
@@ -77,19 +81,26 @@ export function AuthProvider(props: { children: JSX.Element }) {
   }
 
   async function logout(): Promise<{ error?: string }> {
+    let logoutUrl: string | null | undefined;
     try {
-      const { error, response } = await api.POST("/api/auth/logout");
+      const { data, error, response } = await api.POST("/api/auth/logout");
       if (error || !response.ok) {
         return { error: error?.error ?? "Unable to sign out." };
       }
+      logoutUrl = data?.logoutUrl;
     } catch {
       return { error: "Could not reach the server to sign out." };
     }
     setUser(null);
+    if (logoutUrl) {
+      window.location.assign(logoutUrl);
+      return {};
+    }
     try {
       const appRes = await api.GET("/api/app");
       if (appRes.data) {
         setRegistrationOpen(appRes.data.registrationOpen);
+        setCloudflareAccessEnabled(appRes.data.cloudflareAccessEnabled);
       }
     } catch {
       // Optional post-logout bootstrap refresh.
@@ -101,6 +112,7 @@ export function AuthProvider(props: { children: JSX.Element }) {
     ready,
     user,
     registrationOpen,
+    cloudflareAccessEnabled,
     login,
     register,
     logout,
