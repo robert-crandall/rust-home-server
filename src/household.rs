@@ -373,7 +373,7 @@ mod tests {
         profiles.apply_to_user(&mut robert);
 
         assert_eq!(robert.name, "Robert");
-        let robert_url = robert.avatar_url.as_deref().expect("avatar_url set");
+        let robert_url = robert.avatar_url.clone().expect("avatar_url set");
         assert!(robert_url.starts_with(&format!("/api/users/{}/avatar?v=", robert.id)));
 
         let robert_asset = profiles
@@ -387,6 +387,26 @@ mod tests {
             .expect("alex raw base64 avatar");
         assert_eq!(alex_asset.content_type, "image/webp");
         assert_eq!(alex_asset.bytes, WEBP_BYTES);
+
+        // Replacing avatar bytes rotates the ?v= cache-busting query string
+        std::fs::write(
+            &yaml_path,
+            format!(
+                "users:\n  robert@example.com:\n    name: Robert\n    avatar: \"{webp_b64}\"\n"
+            ),
+        )
+        .unwrap();
+        let mut replaced = sample_user("robert@example.com", "old-name");
+        replaced.id = robert.id;
+        profiles.apply_to_user(&mut replaced);
+        let replaced_url = replaced.avatar_url.as_deref().expect("replaced avatar_url");
+        assert!(replaced_url.starts_with(&format!("/api/users/{}/avatar?v=", robert.id)));
+        assert_ne!(replaced_url, robert_url);
+        let replaced_asset = profiles
+            .load_avatar("robert@example.com")
+            .expect("replaced robert avatar");
+        assert_eq!(replaced_asset.content_type, "image/webp");
+        assert_eq!(replaced_asset.bytes, WEBP_BYTES);
 
         // Update users.yaml (different size changes stamp immediately without sleep)
         std::fs::write(
@@ -452,5 +472,48 @@ mod tests {
         // Removing users.yaml clears cached entries
         std::fs::remove_file(&yaml_path).unwrap();
         assert_eq!(profiles.display_name_for("a@example.com"), None);
+    }
+
+    #[test]
+    fn validates_names_without_dropping_avatars_and_reloads_on_atomic_replace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let yaml_path = dir.path().join("users.yaml");
+        let png_b64 = base64::engine::general_purpose::STANDARD.encode(PNG_BYTES);
+        let max_name = "a".repeat(MAX_NAME_LEN);
+        let too_long = "b".repeat(MAX_NAME_LEN + 1);
+        std::fs::write(
+            &yaml_path,
+            format!(
+                "users:\n  blank@example.com:\n    name: \"   \"\n    avatar: \"{png_b64}\"\n  ctrl@example.com:\n    name: \"Bad\\u0007Name\"\n    avatar: \"{png_b64}\"\n  ok@example.com:\n    name: \"{max_name}\"\n  long@example.com:\n    name: \"{too_long}\"\n    avatar: \"{png_b64}\"\n"
+            ),
+        )
+        .unwrap();
+
+        let profiles = HouseholdProfiles::new(yaml_path.clone());
+
+        for email in ["blank@example.com", "ctrl@example.com", "long@example.com"] {
+            let mut u = sample_user(email, "Stored Name");
+            profiles.apply_to_user(&mut u);
+            assert_eq!(u.name, "Stored Name", "rejected name for {email}");
+            assert!(u.avatar_url.is_some(), "valid avatar preserved for {email}");
+        }
+        assert_eq!(
+            profiles.display_name_for("ok@example.com").as_deref(),
+            Some(max_name.as_str())
+        );
+
+        // Atomic rename replacement with identical file length reloads via inode change
+        std::fs::write(&yaml_path, "users:\n  a@example.com:\n    name: Alpha\n").unwrap();
+        assert_eq!(
+            profiles.display_name_for("a@example.com").as_deref(),
+            Some("Alpha")
+        );
+        let tmp_path = dir.path().join("users.yaml.tmp");
+        std::fs::write(&tmp_path, "users:\n  a@example.com:\n    name: Bravo\n").unwrap();
+        std::fs::rename(&tmp_path, &yaml_path).unwrap();
+        assert_eq!(
+            profiles.display_name_for("a@example.com").as_deref(),
+            Some("Bravo")
+        );
     }
 }
