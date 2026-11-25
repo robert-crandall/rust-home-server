@@ -4,6 +4,7 @@ use std::time::Duration;
 use app::auth::CfAccessAuth;
 use app::config::{Config, healthcheck_url_from_env};
 use app::db::connect_and_migrate;
+use app::household::HouseholdProfiles;
 use app::routes::{AppState, ErrorBody, build_router};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderValue, StatusCode, Uri};
@@ -49,6 +50,7 @@ async fn main() -> ExitCode {
         secure_cookies: cfg.secure_cookies,
         allow_open_registration: cfg.allow_open_registration,
         cf_access: cfg.cf_access.map(CfAccessAuth::new),
+        household: cfg.household_dir.map(HouseholdProfiles::new),
     })
     .fallback(serve_spa);
 

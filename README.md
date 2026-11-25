@@ -95,4 +95,14 @@ volumes:
 - **TLS vs. trusted-LAN HTTP**: `APP_ENV=production` marks the `rust_home_server_session` cookie `Secure`, so browsers (and `rust-home-server-mcp token` against an `http://` URL) drop it over plain HTTP. Put TLS termination in front of the container in production (preserving the incoming `Host` header, e.g., `proxy_set_header Host $host` in `nginx`, so same-origin CSRF checks match `Origin`), or leave `APP_ENV` unset when accessing `http://<homelab-ip>:8080` directly on a trusted home network.
 - **Registration policy**: By default (`ALLOW_OPEN_REGISTRATION=false`), only the first account can register to bootstrap a new instance. Set `ALLOW_OPEN_REGISTRATION=true` when building a multi-user app where additional users register their own accounts.
 - **Cloudflare Access**: Set both `CF_ACCESS_TEAM_DOMAIN` (e.g. `https://your-team.cloudflareaccess.com`) and `CF_ACCESS_AUD` (your Access application's AUD tag) to accept RS256 Cloudflare Access JWTs (`Cf-Access-Jwt-Assertion` header or `CF_Authorization` cookie). Authenticated users are matched or auto-provisioned by email without a local password, and signing out redirects through `/cdn-cgi/access/logout`.
+- **Shared household profiles (names & avatars)**: Mount a shared read-only directory (for example `./household:/etc/household:ro`) into each app container and set `HOUSEHOLD_DIR=/etc/household`. Place a `users.yaml` manifest and raster avatar files (`png`, `jpg`, `webp`, `gif`, `avif`) in that directory:
+
+```yaml
+users:
+  robert@example.com:
+    name: Robert
+    avatar: robert.webp
+```
+
+Changes to `users.yaml` hot-reload without restarting containers, override each matching user's display name, and expose authenticated avatars at `/api/users/{id}/avatar`.
 

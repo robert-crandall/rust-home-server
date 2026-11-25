@@ -560,6 +560,7 @@ async fn spawn_in_process_server(pool: PgPool, allow_open_registration: bool) ->
         secure_cookies: false,
         allow_open_registration,
         cf_access: None,
+        household: None,
     };
     let app = build_router(state);
     tokio::spawn(async move {
@@ -1194,6 +1195,7 @@ async fn cloudflare_access_auth_provisioning_and_logout_flow() {
         secure_cookies: false,
         allow_open_registration: false,
         cf_access: Some(cf_auth),
+        household: None,
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1405,6 +1407,93 @@ async fn cloudflare_access_auth_provisioning_and_logout_flow() {
         .await
         .unwrap();
     assert_eq!(bad_cf_with_session.status(), StatusCode::UNAUTHORIZED);
+
+    tdb.teardown().await;
+}
+
+#[tokio::test]
+async fn household_profiles_override_name_and_serve_authenticated_avatars() {
+    let Some(tdb) = TestDb::setup().await else {
+        return;
+    };
+
+    let household_dir = tempfile::tempdir().expect("household tempdir");
+    let png_bytes = b"\x89PNG\r\n\x1a\nhousehold-avatar";
+    std::fs::write(household_dir.path().join("robert.png"), png_bytes).unwrap();
+    std::fs::write(
+        household_dir.path().join("users.yaml"),
+        "users:\n  robert@example.com:\n    name: Robert Crandall\n    avatar: robert.png\n",
+    )
+    .unwrap();
+
+    let state = AppState {
+        pool: tdb.pool.clone(),
+        secure_cookies: false,
+        allow_open_registration: true,
+        cf_access: None,
+        household: Some(app::household::HouseholdProfiles::new(
+            household_dir.path().to_path_buf(),
+        )),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, build_router(state)).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+
+    let authed = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .unwrap();
+    let anon = reqwest::Client::new();
+
+    let reg = authed
+        .post(format!("{base_url}/api/auth/register"))
+        .json(&json!({
+            "email": "robert@example.com",
+            "password": "very-strong-passphrase"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reg.status(), StatusCode::CREATED);
+    let user: Value = reg.json().await.unwrap();
+    let user_id = user["id"].as_str().expect("user id");
+    assert_eq!(user["name"], "Robert Crandall");
+    let avatar_url = user["avatarUrl"].as_str().expect("avatarUrl");
+    assert!(avatar_url.starts_with(&format!("/api/users/{user_id}/avatar")));
+
+    // Unauthenticated callers cannot fetch avatars
+    let unauth_resp = anon
+        .get(format!("{base_url}{avatar_url}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauth_resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Authenticated callers receive the avatar image with nosniff header
+    let avatar_resp = authed
+        .get(format!("{base_url}{avatar_url}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(avatar_resp.status(), StatusCode::OK);
+    assert_eq!(
+        avatar_resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("image/png")
+    );
+    assert_eq!(
+        avatar_resp
+            .headers()
+            .get(reqwest::header::X_CONTENT_TYPE_OPTIONS)
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    assert_eq!(avatar_resp.bytes().await.unwrap().as_ref(), png_bytes);
 
     tdb.teardown().await;
 }

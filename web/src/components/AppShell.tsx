@@ -105,6 +105,15 @@ export function AppShell(props: { user: User }) {
   }
 
   const displayName = () => props.user.name || props.user.email;
+  const initials = () => {
+    const parts = displayName()
+      .trim()
+      .split(/[\s@._-]+/)
+      .filter(Boolean);
+    if (parts.length === 0) return "?";
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
 
   return (
     <div class="page-shell">
@@ -117,7 +126,17 @@ export function AppShell(props: { user: User }) {
 
           <div class="topbar-actions">
             <span class="user-pill" title={props.user.email}>
-              {displayName()}
+              <Show
+                when={props.user.avatarUrl}
+                fallback={
+                  <span class="user-avatar-fallback" aria-hidden="true">
+                    {initials()}
+                  </span>
+                }
+              >
+                {(url) => <img class="user-avatar" src={url()} alt="" />}
+              </Show>
+              <span>{displayName()}</span>
             </span>
             <ThemePicker />
             <button

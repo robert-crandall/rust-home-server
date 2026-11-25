@@ -54,6 +54,9 @@ pub struct User {
     pub id: Uuid,
     pub email: String,
     pub name: String,
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub avatar_url: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -439,7 +442,7 @@ fn verify_cf_access_jwt(
 }
 
 async fn authenticate_cf_access(
-    pool: &PgPool,
+    state: &AppState,
     cf: &CfAccessAuth,
     token: &str,
 ) -> Result<User, ApiError> {
@@ -465,7 +468,7 @@ async fn authenticate_cf_access(
         "SELECT id, email, name, created_at FROM users WHERE lower(email) = $1",
     )
     .bind(&email)
-    .fetch_optional(pool)
+    .fetch_optional(&state.pool)
     .await
     .map_err(|err| {
         tracing::error!(?err, "failed to look up Cloudflare Access user");
@@ -474,7 +477,11 @@ async fn authenticate_cf_access(
         return Ok(existing);
     }
 
-    let name = normalize_display_name(None, &email)?;
+    let household_name = state
+        .household
+        .as_ref()
+        .and_then(|h| h.display_name_for(&email));
+    let name = normalize_display_name(household_name.as_deref(), &email)?;
     if let Some(created) = sqlx::query_as::<_, User>(
         "INSERT INTO users (email, password_hash, name)
          VALUES ($1, NULL, $2)
@@ -483,7 +490,7 @@ async fn authenticate_cf_access(
     )
     .bind(&email)
     .bind(&name)
-    .fetch_optional(pool)
+    .fetch_optional(&state.pool)
     .await
     .map_err(|err| {
         tracing::error!(?err, "failed to provision Cloudflare Access user");
@@ -496,7 +503,7 @@ async fn authenticate_cf_access(
         "SELECT id, email, name, created_at FROM users WHERE lower(email) = $1",
     )
     .bind(&email)
-    .fetch_one(pool)
+    .fetch_one(&state.pool)
     .await
     .map_err(|err| {
         tracing::error!(
@@ -659,6 +666,7 @@ async fn authenticate_session_cookie(
         id: row.id,
         email: row.email,
         name: row.name,
+        avatar_url: None,
         created_at: row.created_at,
     })
 }
@@ -734,17 +742,21 @@ async fn authenticate_bearer_token(
         id: row.user_id,
         email: row.email,
         name: row.name,
+        avatar_url: None,
         created_at: row.created_at,
     })
 }
 
 async fn authenticate_browser_user(state: &AppState, parts: &mut Parts) -> Result<User, ApiError> {
-    if let Some(cf) = &state.cf_access
+    let mut user = if let Some(cf) = &state.cf_access
         && let Some(token) = extract_cf_access_jwt(&parts.headers)
     {
-        return authenticate_cf_access(&state.pool, cf, &token).await;
-    }
-    authenticate_session_cookie(state, parts).await
+        authenticate_cf_access(state, cf, &token).await?
+    } else {
+        authenticate_session_cookie(state, parts).await?
+    };
+    state.hydrate_user(&mut user);
+    Ok(user)
 }
 
 impl<S> FromRequestParts<S> for SessionUser
@@ -777,7 +789,8 @@ where
         let app_state = AppState::from_ref(state);
         // Never fall back to cookies or Cloudflare Access when an Authorization header is supplied.
         if let Some(auth_header) = parts.headers.get(AUTHORIZATION) {
-            let user = authenticate_bearer_token(&app_state.pool, auth_header).await?;
+            let mut user = authenticate_bearer_token(&app_state.pool, auth_header).await?;
+            app_state.hydrate_user(&mut user);
             return Ok(AuthenticatedUser(user));
         }
         let user = authenticate_browser_user(&app_state, parts).await?;

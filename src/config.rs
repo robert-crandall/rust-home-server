@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CfAccessConfig {
@@ -15,6 +16,7 @@ pub struct Config {
     pub secure_cookies: bool,
     pub allow_open_registration: bool,
     pub cf_access: Option<CfAccessConfig>,
+    pub household_dir: Option<PathBuf>,
 }
 
 impl Config {
@@ -103,12 +105,19 @@ impl Config {
             }
         };
 
+        let household_dir = vars
+            .get("HOUSEHOLD_DIR")
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
+
         Ok(Self {
             database_url,
             listen_addr,
             secure_cookies,
             allow_open_registration,
             cf_access,
+            household_dir,
         })
     }
 }
@@ -220,5 +229,21 @@ mod tests {
             "http://example.cloudflareaccess.com".into(),
         );
         assert!(Config::from_map(&vars).is_err());
+    }
+
+    #[test]
+    fn parses_optional_household_dir() {
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "DATABASE_URL".into(),
+            "postgres://localhost/rust_home_server".into(),
+        );
+        assert_eq!(Config::from_map(&vars).unwrap().household_dir, None);
+
+        vars.insert("HOUSEHOLD_DIR".into(), "  /etc/household  ".into());
+        assert_eq!(
+            Config::from_map(&vars).unwrap().household_dir,
+            Some(PathBuf::from("/etc/household"))
+        );
     }
 }
