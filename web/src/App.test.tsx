@@ -626,6 +626,14 @@ describe("Rust Home Server SPA foundation", () => {
       expect(host.querySelector(".user-avatar-fallback")).toBeNull();
     });
 
+    // If the avatar fails to load, fall back to initials instead of showing a broken image
+    const img = host.querySelector(".user-avatar") as HTMLImageElement;
+    img.dispatchEvent(new Event("error"));
+    await waitFor(() => {
+      expect(host.querySelector(".user-avatar")).toBeNull();
+      expect(host.querySelector(".user-avatar-fallback")?.textContent).toBe("RC");
+    });
+
     dispose();
     host.remove();
 

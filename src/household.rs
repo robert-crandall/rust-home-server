@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
+use axum::body::Bytes;
 use base64::Engine as _;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -12,10 +13,11 @@ use crate::auth::User;
 
 const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 const MAX_NAME_LEN: usize = 120;
+const ERROR_LOG_COOLDOWN: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvatarAsset {
-    pub bytes: Vec<u8>,
+    pub bytes: Bytes,
     pub content_type: &'static str,
     pub version: String,
 }
@@ -40,9 +42,36 @@ struct ManifestUserEntry {
     avatar: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    modified: SystemTime,
+    len: u64,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+impl FileStamp {
+    fn from_metadata(meta: &std::fs::Metadata) -> Option<Self> {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt as _;
+
+        Some(Self {
+            modified: meta.modified().ok()?,
+            len: meta.len(),
+            #[cfg(unix)]
+            dev: meta.dev(),
+            #[cfg(unix)]
+            ino: meta.ino(),
+        })
+    }
+}
+
 #[derive(Default)]
 struct CachedManifest {
-    stamp: Option<(SystemTime, u64)>,
+    stamp: Option<FileStamp>,
+    last_error_logged: Option<Instant>,
     entries: HashMap<String, HouseholdProfile>,
 }
 
@@ -70,6 +99,13 @@ impl HouseholdProfiles {
         self.lookup_profile(email).and_then(|p| p.name)
     }
 
+    pub async fn display_name_for_async(&self, email: String) -> Option<String> {
+        let profiles = self.clone();
+        tokio::task::spawn_blocking(move || profiles.display_name_for(&email))
+            .await
+            .unwrap_or(None)
+    }
+
     pub fn apply_to_user(&self, user: &mut User) {
         let Some(profile) = self.lookup_profile(&user.email) else {
             user.avatar_url = None;
@@ -84,8 +120,31 @@ impl HouseholdProfiles {
             .map(|avatar| format!("/api/users/{}/avatar?v={}", user.id, avatar.version));
     }
 
+    pub async fn apply_to_user_async(&self, mut user: User) -> User {
+        let profiles = self.clone();
+        match tokio::task::spawn_blocking(move || {
+            profiles.apply_to_user(&mut user);
+            user
+        })
+        .await
+        {
+            Ok(hydrated) => hydrated,
+            Err(err) => {
+                tracing::warn!(?err, "household profile hydration task panicked");
+                unreachable!("household profile hydration task should not panic");
+            }
+        }
+    }
+
     pub fn load_avatar(&self, email: &str) -> Option<Arc<AvatarAsset>> {
         self.lookup_profile(email)?.avatar
+    }
+
+    pub async fn load_avatar_async(&self, email: String) -> Option<Arc<AvatarAsset>> {
+        let profiles = self.clone();
+        tokio::task::spawn_blocking(move || profiles.load_avatar(&email))
+            .await
+            .unwrap_or(None)
     }
 
     fn lookup_profile(&self, email: &str) -> Option<HouseholdProfile> {
@@ -95,13 +154,14 @@ impl HouseholdProfiles {
         let mut guard = self.inner.cache.lock().unwrap_or_else(|e| e.into_inner());
         match std::fs::metadata(manifest_path) {
             Ok(meta) => {
-                let stamp = meta.modified().ok().map(|m| (m, meta.len()));
+                let stamp = FileStamp::from_metadata(&meta);
                 if stamp.is_none() || stamp != guard.stamp {
                     match std::fs::read_to_string(manifest_path) {
                         Ok(raw) => match serde_yaml_ng::from_str::<ManifestFile>(&raw) {
                             Ok(parsed) => {
                                 guard.entries = normalize_manifest(parsed);
                                 guard.stamp = stamp;
+                                guard.last_error_logged = None;
                             }
                             Err(err) => {
                                 tracing::warn!(
@@ -113,29 +173,45 @@ impl HouseholdProfiles {
                             }
                         },
                         Err(err) => {
-                            tracing::warn!(
-                                path = %manifest_path.display(),
-                                ?err,
-                                "failed to read household users YAML; keeping previous profiles"
-                            );
+                            if should_log_error(&mut guard.last_error_logged) {
+                                tracing::warn!(
+                                    path = %manifest_path.display(),
+                                    ?err,
+                                    "failed to read household users YAML; keeping previous profiles"
+                                );
+                            }
                         }
                     }
                 }
             }
             Err(err) if err.kind() == ErrorKind::NotFound => {
                 guard.stamp = None;
+                guard.last_error_logged = None;
                 guard.entries.clear();
             }
             Err(err) => {
-                tracing::warn!(
-                    path = %manifest_path.display(),
-                    ?err,
-                    "failed to stat household users YAML; keeping previous profiles"
-                );
+                if should_log_error(&mut guard.last_error_logged) {
+                    tracing::warn!(
+                        path = %manifest_path.display(),
+                        ?err,
+                        "failed to stat household users YAML; keeping previous profiles"
+                    );
+                }
             }
         }
 
         guard.entries.get(&key).cloned()
+    }
+}
+
+fn should_log_error(last_logged: &mut Option<Instant>) -> bool {
+    let now = Instant::now();
+    match *last_logged {
+        Some(prev) if now.duration_since(prev) < ERROR_LOG_COOLDOWN => false,
+        _ => {
+            *last_logged = Some(now);
+            true
+        }
     }
 }
 
@@ -220,7 +296,7 @@ fn decode_base64_avatar(raw: &str) -> Option<AvatarAsset> {
     let digest = Sha256::digest(&bytes);
     let version = hex::encode(&digest[..6]);
     Some(AvatarAsset {
-        bytes,
+        bytes: Bytes::from(bytes),
         content_type: sniffed_mime,
         version,
     })
@@ -235,14 +311,25 @@ fn sniff_raster_image_mime(bytes: &[u8]) -> Option<&'static str> {
         Some("image/webp")
     } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
         Some("image/gif")
-    } else if bytes.len() >= 12
-        && &bytes[4..8] == b"ftyp"
-        && (&bytes[8..12] == b"avif" || &bytes[8..12] == b"avis")
-    {
+    } else if is_avif(bytes) {
         Some("image/avif")
     } else {
         None
     }
+}
+
+fn is_avif(bytes: &[u8]) -> bool {
+    if bytes.len() < 12 || &bytes[4..8] != b"ftyp" {
+        return false;
+    }
+    if &bytes[8..12] == b"avif" || &bytes[8..12] == b"avis" {
+        return true;
+    }
+    let box_size = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let end = box_size.min(bytes.len()).min(256);
+    bytes
+        .get(16..end)
+        .is_some_and(|brands| brands.chunks_exact(4).any(|b| b == b"avif" || b == b"avis"))
 }
 
 #[cfg(test)]
@@ -325,6 +412,12 @@ mod tests {
         assert!(decode_base64_avatar(&format!("data:image/jpeg;base64,{png_b64}")).is_none());
         assert!(decode_base64_avatar(&text_b64).is_none());
         assert!(decode_base64_avatar("not-valid-base64!!!").is_none());
+
+        // AVIF with mif1 major brand and avif in compatible brands should be accepted
+        let avif_mif1 = b"\x00\x00\x00\x18ftypmif1\x00\x00\x00\x00mif1avif";
+        let avif_b64 = base64::engine::general_purpose::STANDARD.encode(avif_mif1);
+        let decoded = decode_base64_avatar(&avif_b64).expect("mif1+avif should decode");
+        assert_eq!(decoded.content_type, "image/avif");
     }
 
     #[test]

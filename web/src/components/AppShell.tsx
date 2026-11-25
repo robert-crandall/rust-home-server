@@ -104,6 +104,8 @@ export function AppShell(props: { user: User }) {
     }
   }
 
+  const [failedAvatarUrl, setFailedAvatarUrl] = createSignal<string | null>(null);
+
   const displayName = () => props.user.name || props.user.email;
   const initials = () => {
     const parts = displayName()
@@ -111,8 +113,8 @@ export function AppShell(props: { user: User }) {
       .split(/[\s@._-]+/)
       .filter(Boolean);
     if (parts.length === 0) return "?";
-    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    if (parts.length === 1) return Array.from(parts[0]).slice(0, 2).join("").toUpperCase();
+    return (Array.from(parts[0])[0] + Array.from(parts[parts.length - 1])[0]).toUpperCase();
   };
 
   return (
@@ -127,14 +129,25 @@ export function AppShell(props: { user: User }) {
           <div class="topbar-actions">
             <span class="user-pill" title={props.user.email}>
               <Show
-                when={props.user.avatarUrl}
+                when={
+                  props.user.avatarUrl && failedAvatarUrl() !== props.user.avatarUrl
+                    ? props.user.avatarUrl
+                    : null
+                }
                 fallback={
                   <span class="user-avatar-fallback" aria-hidden="true">
                     {initials()}
                   </span>
                 }
               >
-                {(url) => <img class="user-avatar" src={url()} alt="" />}
+                {(url) => (
+                  <img
+                    class="user-avatar"
+                    src={url()}
+                    alt=""
+                    onError={() => setFailedAvatarUrl(url())}
+                  />
+                )}
               </Show>
               <span>{displayName()}</span>
             </span>

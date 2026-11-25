@@ -37,9 +37,10 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn hydrate_user(&self, user: &mut User) {
-        if let Some(household) = &self.household {
-            household.apply_to_user(user);
+    pub async fn hydrate_user(&self, user: User) -> User {
+        match &self.household {
+            Some(household) => household.apply_to_user_async(user).await,
+            None => user,
         }
     }
 }
@@ -318,10 +319,10 @@ async fn register(
         .map(str::trim)
         .filter(|n| !n.is_empty());
     let household_name = if requested_name.is_none() {
-        state
-            .household
-            .as_ref()
-            .and_then(|h| h.display_name_for(&email))
+        match &state.household {
+            Some(h) => h.display_name_for_async(email.clone()).await,
+            None => None,
+        }
     } else {
         None
     };
@@ -334,7 +335,7 @@ async fn register(
     }
 
     let password_hash = hash_password(payload.password).await?;
-    let (mut user, raw_session) = register_user_with_session(
+    let (user, raw_session) = register_user_with_session(
         &state.pool,
         state.allow_open_registration,
         &email,
@@ -342,7 +343,7 @@ async fn register(
         &name,
     )
     .await?;
-    state.hydrate_user(&mut user);
+    let user = state.hydrate_user(user).await;
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -412,14 +413,14 @@ async fn login(
     };
 
     let raw_session = create_session(&state.pool, row.id).await?;
-    let mut user = User {
+    let user = User {
         id: row.id,
         email: row.email,
         name: row.name,
         avatar_url: None,
         created_at: row.created_at,
     };
-    state.hydrate_user(&mut user);
+    let user = state.hydrate_user(user).await;
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -529,12 +530,9 @@ async fn get_user_avatar(
         return Err(ApiError::not_found("avatar not found"));
     };
 
-    let asset = tokio::task::spawn_blocking(move || household.load_avatar(&email))
+    let asset = household
+        .load_avatar_async(email)
         .await
-        .map_err(|err| {
-            tracing::error!(?err, "avatar load task panicked");
-            ApiError::internal("failed to load avatar")
-        })?
         .ok_or_else(|| ApiError::not_found("avatar not found"))?;
 
     Ok((

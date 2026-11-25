@@ -477,10 +477,10 @@ async fn authenticate_cf_access(
         return Ok(existing);
     }
 
-    let household_name = state
-        .household
-        .as_ref()
-        .and_then(|h| h.display_name_for(&email));
+    let household_name = match &state.household {
+        Some(h) => h.display_name_for_async(email.clone()).await,
+        None => None,
+    };
     let name = normalize_display_name(household_name.as_deref(), &email)?;
     if let Some(created) = sqlx::query_as::<_, User>(
         "INSERT INTO users (email, password_hash, name)
@@ -748,15 +748,14 @@ async fn authenticate_bearer_token(
 }
 
 async fn authenticate_browser_user(state: &AppState, parts: &mut Parts) -> Result<User, ApiError> {
-    let mut user = if let Some(cf) = &state.cf_access
+    let user = if let Some(cf) = &state.cf_access
         && let Some(token) = extract_cf_access_jwt(&parts.headers)
     {
         authenticate_cf_access(state, cf, &token).await?
     } else {
         authenticate_session_cookie(state, parts).await?
     };
-    state.hydrate_user(&mut user);
-    Ok(user)
+    Ok(state.hydrate_user(user).await)
 }
 
 impl<S> FromRequestParts<S> for SessionUser
@@ -789,8 +788,8 @@ where
         let app_state = AppState::from_ref(state);
         // Never fall back to cookies or Cloudflare Access when an Authorization header is supplied.
         if let Some(auth_header) = parts.headers.get(AUTHORIZATION) {
-            let mut user = authenticate_bearer_token(&app_state.pool, auth_header).await?;
-            app_state.hydrate_user(&mut user);
+            let user = authenticate_bearer_token(&app_state.pool, auth_header).await?;
+            let user = app_state.hydrate_user(user).await;
             return Ok(AuthenticatedUser(user));
         }
         let user = authenticate_browser_user(&app_state, parts).await?;

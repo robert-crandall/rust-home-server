@@ -1436,7 +1436,7 @@ async fn household_profiles_override_name_and_serve_authenticated_avatars() {
         secure_cookies: false,
         allow_open_registration: true,
         cf_access: None,
-        household: Some(app::household::HouseholdProfiles::new(yaml_path)),
+        household: Some(app::household::HouseholdProfiles::new(yaml_path.clone())),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1497,6 +1497,22 @@ async fn household_profiles_override_name_and_serve_authenticated_avatars() {
         Some("nosniff")
     );
     assert_eq!(avatar_resp.bytes().await.unwrap().as_ref(), png_bytes);
+
+    // Updating users.yaml hot-reloads on /api/auth/me without changing the DB row
+    std::fs::write(
+        &yaml_path,
+        "users:\n  robert@example.com:\n    name: Bobby\n",
+    )
+    .unwrap();
+    let me_resp = authed
+        .get(format!("{base_url}/api/auth/me"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me_resp.status(), StatusCode::OK);
+    let me_user: Value = me_resp.json().await.unwrap();
+    assert_eq!(me_user["name"], "Bobby");
+    assert!(me_user["avatarUrl"].is_null());
 
     tdb.teardown().await;
 }
