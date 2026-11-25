@@ -1498,6 +1498,37 @@ async fn household_profiles_override_name_and_serve_authenticated_avatars() {
     );
     assert_eq!(avatar_resp.bytes().await.unwrap().as_ref(), png_bytes);
 
+    // Bearer tokens also receive hydrated household profiles and can fetch avatars
+    let tok_resp = authed
+        .post(format!("{base_url}/api/tokens"))
+        .json(&json!({ "name": "household-pat" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tok_resp.status(), StatusCode::CREATED);
+    let tok_body: Value = tok_resp.json().await.unwrap();
+    let bearer = format!("Bearer {}", tok_body["token"].as_str().unwrap());
+
+    let pat_me = anon
+        .get(format!("{base_url}/api/auth/me"))
+        .header(reqwest::header::AUTHORIZATION, &bearer)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pat_me.status(), StatusCode::OK);
+    let pat_user: Value = pat_me.json().await.unwrap();
+    assert_eq!(pat_user["name"], "Robert Crandall");
+    assert_eq!(pat_user["avatarUrl"], avatar_url);
+
+    let pat_avatar = anon
+        .get(format!("{base_url}{avatar_url}"))
+        .header(reqwest::header::AUTHORIZATION, &bearer)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pat_avatar.status(), StatusCode::OK);
+    assert_eq!(pat_avatar.bytes().await.unwrap().as_ref(), png_bytes);
+
     // Updating users.yaml hot-reloads on /api/auth/me without changing the DB row
     std::fs::write(
         &yaml_path,
@@ -1513,6 +1544,13 @@ async fn household_profiles_override_name_and_serve_authenticated_avatars() {
     let me_user: Value = me_resp.json().await.unwrap();
     assert_eq!(me_user["name"], "Bobby");
     assert!(me_user["avatarUrl"].is_null());
+
+    let stored_name = sqlx::query_scalar::<_, String>("SELECT name FROM users WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(user_id).unwrap())
+        .fetch_one(&tdb.pool)
+        .await
+        .unwrap();
+    assert_eq!(stored_name, "Robert Crandall");
 
     tdb.teardown().await;
 }

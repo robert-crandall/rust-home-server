@@ -418,6 +418,16 @@ mod tests {
         let avif_b64 = base64::engine::general_purpose::STANDARD.encode(avif_mif1);
         let decoded = decode_base64_avatar(&avif_b64).expect("mif1+avif should decode");
         assert_eq!(decoded.content_type, "image/avif");
+
+        // Size limit boundary: exact MAX_AVATAR_BYTES accepted, +1 byte rejected
+        let mut at_limit = vec![0u8; MAX_AVATAR_BYTES];
+        at_limit[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        let at_limit_b64 = base64::engine::general_purpose::STANDARD.encode(&at_limit);
+        assert!(decode_base64_avatar(&at_limit_b64).is_some());
+
+        at_limit.push(0);
+        let over_limit_b64 = base64::engine::general_purpose::STANDARD.encode(&at_limit);
+        assert!(decode_base64_avatar(&over_limit_b64).is_none());
     }
 
     #[test]
