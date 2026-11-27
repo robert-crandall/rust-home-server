@@ -49,9 +49,8 @@ fn built_spa_includes_compiled_daisyui_themes() {
     let build_dir = repo_root().join("web/build");
     let index_html =
         std::fs::read_to_string(build_dir.join("index.html")).expect("read web/build/index.html");
-    let head = index_html
-        .split("</head>")
-        .next()
+    let (head, _) = index_html
+        .split_once("</head>")
         .expect("index.html has </head>");
     assert!(
         head.contains("<script src=\"/theme.js\"></script>"),
