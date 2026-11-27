@@ -202,12 +202,12 @@ export function AppShell(props: { user: User }) {
           onToggle={handleDisclosureToggle}
         >
           <summary class="collapse-title font-semibold">
-            <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="flex flex-wrap items-center justify-between gap-2">
               <span>AI &amp; API access</span>
               <span class="text-sm font-normal text-muted">
                 Personal access tokens for rust-home-server-mcp
               </span>
-            </div>
+            </span>
           </summary>
 
           <div class="collapse-content">

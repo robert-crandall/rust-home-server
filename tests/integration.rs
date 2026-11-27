@@ -77,7 +77,10 @@ fn built_spa_includes_compiled_daisyui_themes() {
     assert!(
         combined_css.contains("data-theme=light")
             && combined_css.contains("data-theme=dark")
-            && combined_css.contains("prefers-color-scheme:dark"),
+            && combined_css.contains("prefers-color-scheme:dark")
+            && combined_css.contains(":root:not([data-theme])")
+            && combined_css.contains("--color-base-100")
+            && combined_css.contains("--color-primary"),
         "compiled CSS must include DaisyUI light, dark, and prefers-color-scheme:dark theme rules"
     );
     assert!(

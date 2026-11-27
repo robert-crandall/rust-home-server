@@ -18,12 +18,19 @@
   }
 }
 
-/* Direct utilities outrank DaisyUI's utility sublayers without overriding
-   explicit utilities on a control. */
+/* Override default field border variable inside DaisyUI's base sublayer so
+   modifiers (input-error, select-primary, :focus) and border-* utilities win. */
 @layer utilities {
-  .input,
-  .select {
-    border-color: var(--color-field-border);
+  @layer daisyui.l1.l2.l3 {
+    .input,
+    .select {
+      --input-color: var(--color-field-border);
+    }
+  }
+
+  .input::placeholder {
+    color: var(--color-muted);
+    opacity: 1;
   }
 
   .btn:focus-visible,

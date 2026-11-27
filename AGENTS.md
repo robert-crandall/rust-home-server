@@ -46,7 +46,7 @@ Read `web/node_modules/solid-js/CHEATSHEET.md` whenever touching `web/`. Solid 2
 ## ADHD-Friendly UI & Theme Rules
 
 - **One job per view**: Keep primary screens calm and scannable. Put secondary details, long configuration, and setup controls inside progressive disclosures (`<details>` or drawers) rather than showing everything at once.
-- **DaisyUI 5 + semantic theme tokens**: Configure DaisyUI 5 themes (`light` and `dark`, with `themes: false` so stock themes do not shadow custom tokens) and semantic `@theme` tokens in `web/src/themes.css`, and keep only minimal `@layer base` / `@layer utilities` recipes in `web/src/app.css` (DaisyUI 5 places components in utility sublayers, so overrides must sit directly in `@layer utilities`). Use DaisyUI component classes and semantic Tailwind utilities (`bg-base-100`, `text-muted`, etc.); never hardcode hex palettes or `dark:` color patches inside components.
+- **DaisyUI 5 + semantic theme tokens**: Configure DaisyUI 5 themes (`light` and `dark`, with `themes: false` so stock themes do not shadow custom tokens) and semantic `@theme` tokens in `web/src/themes.css`, and keep only minimal `@layer base` / `@layer utilities` recipes in `web/src/app.css` (override DaisyUI component default variables inside `@layer daisyui.l1.l2.l3` so modifiers and utilities still win). Use DaisyUI component classes and semantic Tailwind utilities (`bg-base-100`, `text-muted`, etc.); never hardcode hex palettes or `dark:` color patches inside components.
 - **Zero-FOUC theme switching**: `web/public/theme.js` owns `window.appTheme` (`system`, `light`, `dark`); UI controls call `window.appTheme` instead of duplicating `localStorage` logic.
 
 ## Commands
