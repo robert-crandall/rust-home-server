@@ -9,7 +9,11 @@ function RootContent() {
   return (
     <Show
       when={auth.ready()}
-      fallback={<div class="status-center">Loading workspace...</div>}
+      fallback={
+        <div class="min-h-screen flex items-center justify-center text-muted">
+          Loading workspace...
+        </div>
+      }
     >
       <Show when={auth.user()} fallback={<AuthScreen />}>
         {(signedInUser) => <AppShell user={signedInUser()} />}

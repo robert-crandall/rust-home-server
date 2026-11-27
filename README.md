@@ -19,7 +19,7 @@ make spec
 ## Tech Stack
 
 - **Backend**: Rust 2024 (`1.95+`), Axum `0.8`, SQLx `0.8` (PostgreSQL `18`), `utoipa` OpenAPI `3.1`, Argon2id cookie sessions + `pat_` personal access tokens, `rust-embed` single-binary SPA serving.
-- **Frontend**: Solid `2.0`, Vite `8`, Vitest `5`, Bun `1.3`, `openapi-fetch` + `openapi-typescript`.
+- **Frontend**: Solid `2.0`, Tailwind CSS `4` + DaisyUI `5`, Vite `8`, Vitest `5`, Bun `1.3`, `openapi-fetch` + `openapi-typescript`.
 - **MCP Server**: `rust-home-server-mcp` (`rmcp` over local `stdio`), reading credentials from `~/.config/rust-home-server.json` or `MCP_APP_URL` / `MCP_APP_TOKEN`.
 - **Deployment**: Nonroot distroless container (`ghcr.io/robert-crandall/rust-home-server:main`) with built-in healthcheck and Watchtower webhook promotion.
 

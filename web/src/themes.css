@@ -1,94 +1,79 @@
-/* Semantic theme tokens.
- * Components consume only these semantic variables so palettes can change
- * without touching application layout or component markup.
+/* Replaceable DaisyUI 5 theme definitions and semantic tokens.
+ * Components consume DaisyUI classes and semantic roles so palettes can
+ * change here without touching component markup.
  */
-:root {
+@plugin "daisyui" {
+  themes: false;
+}
+
+@plugin "daisyui/theme" {
+  name: "light";
+  default: true;
   color-scheme: light;
+  --color-base-100: oklch(100% 0 0);
+  --color-base-200: oklch(97.2% 0.004 152);
+  --color-base-300: oklch(90% 0.01 152);
+  --color-base-content: oklch(22% 0.018 152);
+  --color-primary: oklch(46% 0.12 152);
+  --color-primary-content: oklch(99% 0.004 152);
+  --color-secondary: oklch(52% 0.055 162);
+  --color-secondary-content: oklch(99% 0.004 160);
+  --color-accent: oklch(46% 0.075 165);
+  --color-accent-content: oklch(99% 0.004 160);
+  --color-neutral: oklch(28% 0.02 152);
+  --color-neutral-content: oklch(98% 0.004 152);
+  --color-info: oklch(52% 0.09 225);
+  --color-info-content: oklch(99% 0.004 225);
+  --color-success: oklch(48% 0.12 152);
+  --color-success-content: oklch(99% 0.004 152);
+  --color-warning: oklch(52% 0.13 70);
+  --color-warning-content: oklch(99% 0.008 75);
+  --color-error: oklch(48% 0.16 25);
+  --color-error-content: oklch(99% 0.006 25);
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 1rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "dark";
+  prefersdark: true;
+  color-scheme: dark;
+  --color-base-100: oklch(22% 0.015 152);
+  --color-base-200: oklch(17% 0.012 152);
+  --color-base-300: oklch(31% 0.02 152);
+  --color-base-content: oklch(94% 0.008 152);
+  --color-primary: oklch(76% 0.14 152);
+  --color-primary-content: oklch(16% 0.03 152);
+  --color-secondary: oklch(68% 0.06 164);
+  --color-secondary-content: oklch(16% 0.02 164);
+  --color-accent: oklch(74% 0.09 162);
+  --color-accent-content: oklch(16% 0.025 162);
+  --color-neutral: oklch(30% 0.018 152);
+  --color-neutral-content: oklch(94% 0.008 152);
+  --color-info: oklch(74% 0.1 225);
+  --color-info-content: oklch(16% 0.02 225);
+  --color-success: oklch(74% 0.13 152);
+  --color-success-content: oklch(16% 0.03 152);
+  --color-warning: oklch(78% 0.12 75);
+  --color-warning-content: oklch(18% 0.03 75);
+  --color-error: oklch(72% 0.15 24);
+  --color-error-content: oklch(16% 0.03 24);
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 1rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@theme {
   --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-
-  --bg-canvas: #f7f8f6;
-  --bg-surface: #ffffff;
-  --bg-subtle: #eff2ed;
-  --bg-code: #edf1eb;
-
-  --text-primary: #17201a;
-  --text-secondary: #46544b;
-  --text-muted: #5d6c62;
-
-  --border-subtle: #d8dfd9;
-  --border-strong: #6e7f73;
-
-  --accent: #15803d;
-  --accent-hover: #166534;
-  --accent-contrast: #ffffff;
-  --accent-soft: #e6f4ea;
-
-  --danger: #b91c1c;
-  --danger-soft: #fef2f2;
-  --danger-border: #fecaca;
-
-  --focus-ring: #15803d;
-  --shadow-card: 0 1px 3px rgba(23, 32, 26, 0.06), 0 1px 2px rgba(23, 32, 26, 0.04);
-
-  --radius-sm: 0.5rem;
-  --radius-md: 0.75rem;
-  --radius-lg: 1rem;
-  --control-height: 2.625rem;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --bg-canvas: #101512;
-    --bg-surface: #171f1a;
-    --bg-subtle: #1f2923;
-    --bg-code: #232e27;
-
-    --text-primary: #eef3ef;
-    --text-secondary: #b7c5bc;
-    --text-muted: #93a499;
-
-    --border-subtle: #2a372f;
-    --border-strong: #738a7b;
-
-    --accent: #4ade80;
-    --accent-hover: #86efac;
-    --accent-contrast: #0b1910;
-    --accent-soft: #173322;
-
-    --danger: #fca5a5;
-    --danger-soft: #311517;
-    --danger-border: #692629;
-
-    --focus-ring: #4ade80;
-    --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.32);
-  }
-}
-
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg-canvas: #101512;
-  --bg-surface: #171f1a;
-  --bg-subtle: #1f2923;
-  --bg-code: #232e27;
-
-  --text-primary: #eef3ef;
-  --text-secondary: #b7c5bc;
-  --text-muted: #93a499;
-
-  --border-subtle: #2a372f;
-  --border-strong: #738a7b;
-
-  --accent: #4ade80;
-  --accent-hover: #86efac;
-  --accent-contrast: #0b1910;
-  --accent-soft: #173322;
-
-  --danger: #fca5a5;
-  --danger-soft: #311517;
-  --danger-border: #692629;
-
-  --focus-ring: #4ade80;
-  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.32);
+  --color-muted: color-mix(in oklch, var(--color-base-content) 72%, var(--color-base-100));
+  --color-field-border: color-mix(in oklch, var(--color-base-content) 55%, var(--color-base-100));
+  --color-focus: var(--color-primary);
 }

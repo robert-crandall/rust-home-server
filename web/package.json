@@ -19,8 +19,11 @@
   "devDependencies": {
     "@solidjs/diagnostics": "2.0.0-rc.21",
     "@solidjs/vite-plugin": "3.0.0-next.57",
+    "@tailwindcss/vite": "^4.3.5",
+    "daisyui": "^5",
     "jsdom": "30.0.1",
     "openapi-typescript": "^7.13.0",
+    "tailwindcss": "^4.3.5",
     "typescript": "^6.0.3",
     "vite": "^8.3.5",
     "vitest": "^5.0.5"
