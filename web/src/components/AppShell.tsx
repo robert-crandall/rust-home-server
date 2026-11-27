@@ -118,16 +118,19 @@ export function AppShell(props: { user: User }) {
   };
 
   return (
-    <div class="page-shell">
-      <header class="topbar">
-        <div class="topbar-inner">
-          <div class="brand">
-            <img class="brand-icon" src="/icon.svg" alt="" />
+    <div class="min-h-screen flex flex-col">
+      <header class="navbar bg-base-100 border-b border-base-300 px-0 min-h-0">
+        <div class="mx-auto w-full max-w-4xl px-5 py-3 flex flex-wrap items-center justify-between gap-4">
+          <div class="inline-flex items-center gap-2.5 font-bold text-lg tracking-tight">
+            <img class="size-7 rounded-md shrink-0" src="/icon.svg" alt="" />
             <span>Rust Home Server</span>
           </div>
 
-          <div class="topbar-actions">
-            <span class="user-pill" title={props.user.email}>
+          <div class="flex flex-wrap items-center gap-3">
+            <span
+              class="inline-flex items-center gap-2 rounded-full bg-base-200 border border-base-300 py-1 ps-1 pe-3 text-sm text-base-content"
+              title={props.user.email}
+            >
               <Show
                 when={
                   props.user.avatarUrl && failedAvatarUrl() !== props.user.avatarUrl
@@ -135,14 +138,17 @@ export function AppShell(props: { user: User }) {
                     : null
                 }
                 fallback={
-                  <span class="user-avatar-fallback" aria-hidden="true">
+                  <span
+                    class="user-avatar-fallback inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-content text-[11px] font-bold tracking-wide"
+                    aria-hidden="true"
+                  >
                     {initials()}
                   </span>
                 }
               >
                 {(url) => (
                   <img
-                    class="user-avatar"
+                    class="user-avatar block size-6 shrink-0 rounded-full object-cover"
                     src={url()}
                     alt=""
                     onError={() => setFailedAvatarUrl(url())}
@@ -154,7 +160,7 @@ export function AppShell(props: { user: User }) {
             <ThemePicker />
             <button
               type="button"
-              class="btn btn-secondary"
+              class="btn btn-outline btn-sm"
               onClick={() => void handleLogout()}
             >
               Sign out
@@ -163,112 +169,150 @@ export function AppShell(props: { user: User }) {
         </div>
       </header>
 
-      <main class="main-container">
+      <main class="mx-auto w-full max-w-4xl px-5 pt-8 pb-14 flex flex-col gap-6">
         <Show when={logoutError()}>
           {(msg) => (
-            <div class="alert-error" role="alert">
+            <div class="alert alert-error alert-soft text-sm" role="alert">
               {msg()}
             </div>
           )}
         </Show>
 
-        <section class="surface-card" aria-labelledby="focus-heading">
-          <span class="eyebrow">Homelab starter</span>
-          <h1 id="focus-heading">Ready for Rust Home Server</h1>
-          <p class="lead-copy">
-            Signed in as <strong>{displayName()}</strong>. Replace this view with
-            your application features.
-          </p>
+        <section
+          class="card card-border bg-base-100 shadow-sm"
+          aria-labelledby="focus-heading"
+        >
+          <div class="card-body gap-3">
+            <span class="badge badge-soft badge-primary text-xs font-semibold uppercase tracking-wider">
+              Homelab starter
+            </span>
+            <h1 id="focus-heading" class="text-2xl font-bold tracking-tight">
+              Ready for Rust Home Server
+            </h1>
+            <p class="text-muted max-w-[62ch]">
+              Signed in as{" "}
+              <strong class="text-base-content">{displayName()}</strong>. Replace
+              this view with your application features.
+            </p>
+          </div>
         </section>
 
-        <details class="disclosure" onToggle={handleDisclosureToggle}>
-          <summary>
-            <span>AI &amp; API access</span>
-            <span class="disclosure-hint">
-              Personal access tokens for rust-home-server-mcp
-            </span>
+        <details
+          class="collapse collapse-arrow bg-base-100 border border-base-300 shadow-sm"
+          onToggle={handleDisclosureToggle}
+        >
+          <summary class="collapse-title font-semibold">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span>AI &amp; API access</span>
+              <span class="text-sm font-normal text-muted">
+                Personal access tokens for rust-home-server-mcp
+              </span>
+            </div>
           </summary>
 
-          <div class="disclosure-body">
-            <p class="lead-copy">
-              Run <code>make mcp-token</code> on your workstation or mint a
-              personal access token below for <code>rust-home-server-mcp</code>.
-            </p>
+          <div class="collapse-content">
+            <div class="border-t border-base-300 pt-4 flex flex-col gap-5">
+              <p class="text-muted max-w-[62ch]">
+                Run <code class="text-sm">make mcp-token</code> on your
+                workstation or mint a personal access token below for{" "}
+                <code class="text-sm">rust-home-server-mcp</code>.
+              </p>
 
-            <Show when={tokenError()}>
-              {(msg) => (
-                <div class="alert-error" role="alert">
-                  {msg()}
-                </div>
-              )}
-            </Show>
-
-            <Show when={createdToken()}>
-              {(minted) => (
-                <div class="secret-banner" role="status">
-                  <strong>Copy your new token now (shown once):</strong>
-                  <div class="secret-row">
-                    <code class="secret-code">{minted().token}</code>
+              <Show when={tokenError()}>
+                {(msg) => (
+                  <div class="alert alert-error alert-soft text-sm" role="alert">
+                    {msg()}
                   </div>
-                  <p>
-                    Token <strong>{minted().name}</strong> ending in{" "}
-                    <code>{minted().last4}</code>.
-                  </p>
+                )}
+              </Show>
+
+              <Show when={createdToken()}>
+                {(minted) => (
+                  <div
+                    class="rounded-box border border-primary/25 bg-primary/10 p-4 flex flex-col gap-2"
+                    role="status"
+                  >
+                    <strong>Copy your new token now (shown once):</strong>
+                    <div class="flex flex-wrap items-center gap-2.5">
+                      <code class="flex-1 basis-64 rounded-field border border-base-300 bg-base-100 px-2.5 py-2 text-sm overflow-x-auto break-all">
+                        {minted().token}
+                      </code>
+                    </div>
+                    <p class="text-sm text-muted">
+                      Token{" "}
+                      <strong class="text-base-content">{minted().name}</strong>{" "}
+                      ending in <code class="text-sm">{minted().last4}</code>.
+                    </p>
+                  </div>
+                )}
+              </Show>
+
+              <form
+                class="flex flex-wrap items-end gap-3"
+                onSubmit={(e) => void handleCreateToken(e)}
+              >
+                <div class="flex flex-col gap-1.5 flex-1 basis-56">
+                  <label class="text-sm font-semibold" for="new-token-name">
+                    New token name
+                  </label>
+                  <input
+                    id="new-token-name"
+                    class="input w-full"
+                    type="text"
+                    placeholder="e.g. laptop-mcp"
+                    required
+                    maxlength={80}
+                    value={tokenName()}
+                    onInput={(e) => setTokenName(e.currentTarget.value)}
+                  />
                 </div>
-              )}
-            </Show>
+                <button
+                  class="btn btn-primary"
+                  type="submit"
+                  disabled={creating()}
+                >
+                  {creating() ? "Minting..." : "Mint token"}
+                </button>
+              </form>
 
-            <form class="inline-form" onSubmit={(e) => void handleCreateToken(e)}>
-              <div class="field">
-                <label for="new-token-name">New token name</label>
-                <input
-                  id="new-token-name"
-                  class="input"
-                  type="text"
-                  placeholder="e.g. laptop-mcp"
-                  required
-                  maxlength={80}
-                  value={tokenName()}
-                  onInput={(e) => setTokenName(e.currentTarget.value)}
-                />
-              </div>
-              <button class="btn btn-primary" type="submit" disabled={creating()}>
-                {creating() ? "Minting..." : "Mint token"}
-              </button>
-            </form>
-
-            <Show
-              when={tokens().length > 0}
-              fallback={
-                <Show when={tokensLoaded()}>
-                  <p class="field-hint">
-                    No personal access tokens minted for this account yet.
-                  </p>
-                </Show>
-              }
-            >
-              <ul class="token-list" aria-label="Personal access tokens">
-                <For each={tokens()}>
-                  {(tok) => (
-                    <li class="token-item">
-                      <div class="token-meta">
-                        <span class="token-name">{tok.name}</span>
-                        <span class="token-detail">
-                          Ends in <code>{tok.last4}</code>
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        class="btn btn-danger"
-                        onClick={() => void handleRevokeToken(tok.id)}
-                      >
-                        Revoke
-                      </button>
-                    </li>
-                  )}
-                </For>
-              </ul>
-            </Show>
+              <Show
+                when={tokens().length > 0}
+                fallback={
+                  <Show when={tokensLoaded()}>
+                    <p class="text-xs text-muted">
+                      No personal access tokens minted for this account yet.
+                    </p>
+                  </Show>
+                }
+              >
+                <ul
+                  class="divide-y divide-base-300 border-y border-base-300"
+                  aria-label="Personal access tokens"
+                >
+                  <For each={tokens()}>
+                    {(tok) => (
+                      <li class="token-item flex flex-wrap items-center justify-between gap-4 py-3">
+                        <div class="flex flex-col gap-0.5">
+                          <span class="token-name font-semibold text-sm">
+                            {tok.name}
+                          </span>
+                          <span class="text-xs text-muted">
+                            Ends in <code class="text-xs">{tok.last4}</code>
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          class="btn btn-error btn-outline btn-sm"
+                          onClick={() => void handleRevokeToken(tok.id)}
+                        >
+                          Revoke
+                        </button>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
+            </div>
           </div>
         </details>
       </main>

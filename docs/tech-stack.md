@@ -10,7 +10,7 @@
 | Database | PostgreSQL `18`, `sqlx 0.8` (`runtime-tokio-rustls`) | Embedded SQL migrations (`migrations/`), async connection pooling, and zero OpenSSL runtime coupling. |
 | Authentication | Argon2id (`m=19 MiB, t=2, p=1`), 30-day sliding cookie sessions, `pat_` bearer tokens | Direct homelab exposure without an auth proxy today; per-user accounts, sessions, and API tokens work out of the box for both single-user and multi-user apps. |
 | MCP server | `rust-home-server-mcp` (`rmcp 3.11` over `stdio`) | Matches `go-home-server` ergonomics: `<slug>-mcp token` mints and stores `~/.config/<slug>.json` (`0600`), and `<slug>-mcp serve` runs locally in any MCP client. |
-| Frontend | Solid `2.0` (`solid-js@2.0.0-rc`), Vite `8`, Vitest `5`, Bun `1.3`, `openapi-fetch` | Fine-grained reactivity with strict LLM-targeted diagnostics (`@solidjs/diagnostics`) and generated API types (`web/src/lib/api/schema.d.ts`). |
+| Frontend | Solid `2.0` (`solid-js@2.0.0-rc`), Tailwind CSS `4` + DaisyUI `5`, Vite `8`, Vitest `5`, Bun `1.3`, `openapi-fetch` | Fine-grained reactivity with strict LLM-targeted diagnostics (`@solidjs/diagnostics`), semantic DaisyUI 5 themes (`light`/`dark`), and generated API types (`web/src/lib/api/schema.d.ts`). |
 | Container & CD | Multi-stage `Dockerfile` -> `gcr.io/distroless/cc-debian12:nonroot`, GHCR + Watchtower | Single binary with embedded `web/build`, built-in `["/app", "healthcheck"]` probe, immutable `:sha-<40hex>` tags, and serialized `:main` promotion. |
 
 ## Key Invariants

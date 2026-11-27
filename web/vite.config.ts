@@ -1,10 +1,11 @@
 import solid from "@solidjs/vite-plugin";
+import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vitest/config";
 
 const apiTarget = process.env.VITE_API_ORIGIN ?? "http://127.0.0.1:8080";
 
 export default defineConfig({
-  plugins: [solid()],
+  plugins: [tailwindcss(), solid()],
   build: {
     outDir: "build",
     emptyOutDir: true,

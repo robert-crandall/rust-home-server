@@ -46,124 +46,135 @@ export function AuthScreen() {
   const isRegister = () => mode() === "register" && auth.registrationOpen();
 
   return (
-    <main class="auth-container">
-      <section class="auth-card" aria-labelledby="auth-heading">
-        <header class="auth-header">
-          <div class="brand">
-            <img class="brand-icon" src="/icon.svg" alt="" />
-            <span>Rust Home Server</span>
-          </div>
-          <h1 id="auth-heading">
-            {isRegister() ? "Create account" : "Sign in"}
-          </h1>
-          <p>
-            {isRegister()
-              ? "Create an account to get started."
-              : "Sign in to your account."}
-          </p>
-        </header>
-
-        <Show when={error()}>
-          {(msg) => (
-            <div class="alert-error" role="alert">
-              {msg()}
+    <main class="min-h-screen flex flex-col items-center justify-center p-6">
+      <section
+        class="card card-border bg-base-100 shadow-sm w-full max-w-sm"
+        aria-labelledby="auth-heading"
+      >
+        <div class="card-body gap-5">
+          <header class="flex flex-col gap-2">
+            <div class="inline-flex items-center gap-2.5 font-bold text-lg tracking-tight">
+              <img class="size-7 rounded-md shrink-0" src="/icon.svg" alt="" />
+              <span>Rust Home Server</span>
             </div>
-          )}
-        </Show>
+            <h1 id="auth-heading" class="text-2xl font-bold leading-tight">
+              {isRegister() ? "Create account" : "Sign in"}
+            </h1>
+            <p class="text-sm text-muted">
+              {isRegister()
+                ? "Create an account to get started."
+                : "Sign in to your account."}
+            </p>
+          </header>
 
-        <Show when={auth.cloudflareAccessEnabled()}>
-          <a
-            href="/cdn-cgi/access/login"
-            class="btn btn-primary"
-            style={{ "text-decoration": "none", "text-align": "center" }}
-          >
-            Sign in with Cloudflare Access
-          </a>
-        </Show>
-
-        <form class="stack-form" onSubmit={(e) => void handleSubmit(e)}>
-          <Show when={isRegister()}>
-            <div class="field">
-              <label for="auth-name">Name (optional)</label>
-              <input
-                id="auth-name"
-                class="input"
-                type="text"
-                autocomplete="name"
-                value={name()}
-                onInput={(e) => setName(e.currentTarget.value)}
-              />
-            </div>
+          <Show when={error()}>
+            {(msg) => (
+              <div class="alert alert-error alert-soft text-sm" role="alert">
+                {msg()}
+              </div>
+            )}
           </Show>
 
-          <div class="field">
-            <label for="auth-email">Email</label>
-            <input
-              id="auth-email"
-              class="input"
-              type="email"
-              required
-              autocomplete="email"
-              value={email()}
-              onInput={(e) => setEmail(e.currentTarget.value)}
-            />
-          </div>
+          <Show when={auth.cloudflareAccessEnabled()}>
+            <a href="/cdn-cgi/access/login" class="btn btn-primary w-full">
+              Sign in with Cloudflare Access
+            </a>
+          </Show>
 
-          <div class="field">
-            <label for="auth-password">Password</label>
-            <input
-              id="auth-password"
-              class="input"
-              type="password"
-              required
-              minlength={isRegister() ? 8 : 1}
-              autocomplete={isRegister() ? "new-password" : "current-password"}
-              value={password()}
-              onInput={(e) => setPassword(e.currentTarget.value)}
-            />
+          <form class="flex flex-col gap-4" onSubmit={(e) => void handleSubmit(e)}>
             <Show when={isRegister()}>
-              <span class="field-hint">At least 8 characters.</span>
+              <div class="flex flex-col gap-1.5">
+                <label class="text-sm font-semibold" for="auth-name">
+                  Name (optional)
+                </label>
+                <input
+                  id="auth-name"
+                  class="input w-full"
+                  type="text"
+                  autocomplete="name"
+                  value={name()}
+                  onInput={(e) => setName(e.currentTarget.value)}
+                />
+              </div>
             </Show>
-          </div>
 
-          <button class="btn btn-primary" type="submit" disabled={submitting()}>
-            {submitting()
-              ? isRegister()
-                ? "Creating account..."
-                : "Signing in..."
-              : isRegister()
-                ? "Create account"
-                : "Sign in"}
-          </button>
-        </form>
+            <div class="flex flex-col gap-1.5">
+              <label class="text-sm font-semibold" for="auth-email">
+                Email
+              </label>
+              <input
+                id="auth-email"
+                class="input w-full"
+                type="email"
+                required
+                autocomplete="email"
+                value={email()}
+                onInput={(e) => setEmail(e.currentTarget.value)}
+              />
+            </div>
 
-        <Show when={auth.registrationOpen()}>
-          <div>
-            <Show
-              when={isRegister()}
-              fallback={
+            <div class="flex flex-col gap-1.5">
+              <label class="text-sm font-semibold" for="auth-password">
+                Password
+              </label>
+              <input
+                id="auth-password"
+                class="input w-full"
+                type="password"
+                required
+                minlength={isRegister() ? 8 : 1}
+                autocomplete={isRegister() ? "new-password" : "current-password"}
+                value={password()}
+                onInput={(e) => setPassword(e.currentTarget.value)}
+              />
+              <Show when={isRegister()}>
+                <span class="text-xs text-muted">At least 8 characters.</span>
+              </Show>
+            </div>
+
+            <button
+              class="btn btn-primary w-full"
+              type="submit"
+              disabled={submitting()}
+            >
+              {submitting()
+                ? isRegister()
+                  ? "Creating account..."
+                  : "Signing in..."
+                : isRegister()
+                  ? "Create account"
+                  : "Sign in"}
+            </button>
+          </form>
+
+          <Show when={auth.registrationOpen()}>
+            <div>
+              <Show
+                when={isRegister()}
+                fallback={
+                  <button
+                    type="button"
+                    class="link link-primary text-sm font-semibold"
+                    onClick={() => switchMode("register")}
+                  >
+                    Need an account? Create one
+                  </button>
+                }
+              >
                 <button
                   type="button"
-                  class="link-btn"
-                  onClick={() => switchMode("register")}
+                  class="link link-primary text-sm font-semibold"
+                  onClick={() => switchMode("login")}
                 >
-                  Need an account? Create one
+                  Already have an account? Sign in
                 </button>
-              }
-            >
-              <button
-                type="button"
-                class="link-btn"
-                onClick={() => switchMode("login")}
-              >
-                Already have an account? Sign in
-              </button>
-            </Show>
-          </div>
-        </Show>
+              </Show>
+            </div>
+          </Show>
+        </div>
       </section>
 
-      <footer class="auth-footer">
+      <footer class="mt-4 flex items-center justify-between gap-3 w-full max-w-sm text-sm text-muted">
         <span>Self-hosted homelab portal</span>
         <ThemePicker />
       </footer>

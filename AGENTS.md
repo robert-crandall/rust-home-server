@@ -8,7 +8,7 @@ Guidance for AI coding agents working in `robert-crandall/rust-home-server`.
 
 - **Backend**: Rust 2024 (`1.95+`), Axum `0.8`, SQLx `0.8` (PostgreSQL 18), `utoipa` + `utoipa-axum` (OpenAPI 3.1), Argon2id sessions + `pat_` personal access tokens, `rust-embed` SPA serving.
 - **MCP server**: `rust-home-server-mcp` (`rmcp` over local `stdio`), talking to the HTTP API using `~/.config/rust-home-server.json` (`MCP_APP_URL` / `MCP_APP_TOKEN` overrides).
-- **Frontend**: Solid `2.0` (`solid-js@2.0.0-rc.*`, `@solidjs/web`, `@solidjs/vite-plugin`), Vite `8`, Vitest `5`, Bun `1.3.x`, and `openapi-fetch` + `openapi-typescript`.
+- **Frontend**: Solid `2.0` (`solid-js@2.0.0-rc.*`, `@solidjs/web`, `@solidjs/vite-plugin`), Tailwind CSS `4` (`@tailwindcss/vite`) + DaisyUI `5`, Vite `8`, Vitest `5`, Bun `1.3.x`, and `openapi-fetch` + `openapi-typescript`.
 
 ## Authentication & Security Model
 
@@ -46,7 +46,7 @@ Read `web/node_modules/solid-js/CHEATSHEET.md` whenever touching `web/`. Solid 2
 ## ADHD-Friendly UI & Theme Rules
 
 - **One job per view**: Keep primary screens calm and scannable. Put secondary details, long configuration, and setup controls inside progressive disclosures (`<details>` or drawers) rather than showing everything at once.
-- **Semantic theme tokens only**: Define colors in `web/src/themes.css` and reference semantic CSS variables in `web/src/app.css`. Never hardcode hex palettes inside components.
+- **DaisyUI 5 + semantic theme tokens**: Configure DaisyUI 5 themes (`light` and `dark`, with `themes: false` so stock themes do not shadow custom tokens) and semantic `@theme` tokens in `web/src/themes.css`, and keep only minimal `@layer base` / `@layer utilities` recipes in `web/src/app.css` (DaisyUI 5 places components in utility sublayers, so overrides must sit directly in `@layer utilities`). Use DaisyUI component classes and semantic Tailwind utilities (`bg-base-100`, `text-muted`, etc.); never hardcode hex palettes or `dark:` color patches inside components.
 - **Zero-FOUC theme switching**: `web/public/theme.js` owns `window.appTheme` (`system`, `light`, `dark`); UI controls call `window.appTheme` instead of duplicating `localStorage` logic.
 
 ## Commands

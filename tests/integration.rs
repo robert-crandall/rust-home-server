@@ -45,6 +45,49 @@ fn bun_lockfile_uses_default_registry_resolution() {
 }
 
 #[test]
+fn built_spa_includes_compiled_daisyui_themes() {
+    let build_dir = repo_root().join("web/build");
+    let index_html =
+        std::fs::read_to_string(build_dir.join("index.html")).expect("read web/build/index.html");
+    let head = index_html
+        .split("</head>")
+        .next()
+        .expect("index.html has </head>");
+    assert!(
+        head.contains("<script src=\"/theme.js\"></script>"),
+        "web/build/index.html must load /theme.js blocking in <head> before paint"
+    );
+
+    let css_files: Vec<PathBuf> = std::fs::read_dir(build_dir.join("assets"))
+        .expect("read web/build/assets")
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            (path.extension().and_then(|e| e.to_str()) == Some("css")).then_some(path)
+        })
+        .collect();
+    assert!(
+        !css_files.is_empty(),
+        "expected compiled CSS bundle in web/build/assets"
+    );
+
+    let combined_css = css_files
+        .iter()
+        .map(|path| std::fs::read_to_string(path).expect("read compiled css"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        combined_css.contains("data-theme=light")
+            && combined_css.contains("data-theme=dark")
+            && combined_css.contains("prefers-color-scheme:dark"),
+        "compiled CSS must include DaisyUI light, dark, and prefers-color-scheme:dark theme rules"
+    );
+    assert!(
+        !combined_css.contains("@plugin") && !combined_css.contains("@theme"),
+        "compiled CSS must not contain unprocessed Tailwind/DaisyUI @plugin or @theme directives"
+    );
+}
+
+#[test]
 fn publish_plan_script_matrix() {
     let sha = "0123456789abcdef0123456789abcdef01234567";
     let other_sha = "fedcba9876543210fedcba9876543210fedcba98";

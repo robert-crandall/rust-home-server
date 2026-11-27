@@ -293,6 +293,16 @@ describe("Rust Home Server SPA foundation", () => {
     flush();
     expect(document.documentElement.dataset.theme).toBe("dark");
 
+    themeSelect.value = "light";
+    themeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    flush();
+    expect(document.documentElement.dataset.theme).toBe("light");
+
+    themeSelect.value = "system";
+    themeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    flush();
+    expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
+
     const details = host.querySelector("details") as HTMLDetailsElement;
     details.open = true;
     details.dispatchEvent(new Event("toggle"));

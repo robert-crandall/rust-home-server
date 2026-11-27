@@ -20,7 +20,7 @@ export function ThemePicker() {
 
   return (
     <select
-      class="select"
+      class="select select-sm w-auto"
       aria-label="Color theme"
       value={theme()}
       onChange={(e) => handleChange(e.currentTarget.value as ThemePreference)}
