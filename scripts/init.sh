@@ -51,7 +51,7 @@ python3 -B scripts/render-icons.py --reject-sha256 "$TEMPLATE_ICON_SHA256" -- "$
 FILES=()
 while IFS= read -r file; do
   FILES+=("$file")
-done < <(git ls-files | grep -Ev '^(scripts/init\.sh|docs/tech-stack\.md|.*\.png)$')
+done < <(git ls-files | grep -Ev '^(scripts/init\.sh|docs/tech-stack\.md|.*\.[pP][nN][gG])$')
 
 OLD_REPO="$OLD_REPO" NEW_REPO="$NEW_REPO" \
 OLD_NAME="$OLD_NAME" NAME="$NAME" \
@@ -64,7 +64,7 @@ perl -i -pe '
   s/\Q$ENV{OLD_CRATE}\E/$ENV{CRATE_SLUG}/g;
 ' "${FILES[@]}"
 
-LEFTOVERS="$(git grep -I -n -i -E "${OLD_REPO}|${OLD_NAME}|${OLD_SLUG}|${OLD_CRATE}" -- . ':(exclude)scripts/init.sh' ':(exclude)docs/tech-stack.md' ':(exclude)*.png' || true)"
+LEFTOVERS="$(git grep -I -n -i -E "${OLD_REPO}|${OLD_NAME}|${OLD_SLUG}|${OLD_CRATE}" -- . ':(exclude)scripts/init.sh' ':(exclude)docs/tech-stack.md' ':(exclude,icase)*.png' || true)"
 if [[ -n "$LEFTOVERS" ]]; then
   echo "Error: leftover template references found:" >&2
   echo "$LEFTOVERS" >&2

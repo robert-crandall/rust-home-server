@@ -553,15 +553,16 @@ fn init_script_renames_template_cleanly() {
     let orig_512 = std::fs::read(dir.path().join("web/public/icon-512.png")).expect("orig 512");
     let orig_192 = std::fs::read(dir.path().join("web/public/icon-192.png")).expect("orig 192");
 
-    // Plant a tracked binary PNG containing the template name bytes to verify binary files are skipped.
-    let planted_path = dir.path().join("web/public/keep-binary.png");
+    // Plant a tracked binary PNG (uppercase .PNG) containing the template name bytes to verify
+    // case-insensitive binary PNG exclusion.
+    let planted_path = dir.path().join("web/public/keep-binary.PNG");
     let marker = "Rust Home Server rust-home-server";
     let mut planted_bytes = b"\x89PNG\r\n\x1a\n".to_vec();
     planted_bytes.extend_from_slice(marker.as_bytes());
     std::fs::write(&planted_path, &planted_bytes).expect("write planted png");
     assert!(
         std::process::Command::new("git")
-            .args(["add", "web/public/keep-binary.png"])
+            .args(["add", "web/public/keep-binary.PNG"])
             .current_dir(dir.path())
             .status()
             .expect("git add planted png")
@@ -624,7 +625,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("ri", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-w, h, rgba = mod.decode_png_rgba8(Path(sys.argv[2]).read_bytes())
+w, h, rgba, _ = mod.decode_png_rgba8(Path(sys.argv[2]).read_bytes())
 idx = ((h // 2) * w + (w // 2)) * 4
 assert list(rgba[idx:idx+4]) == [40, 120, 210, 255], f"unexpected pixel {list(rgba[idx:idx+4])}"
 "#;
@@ -861,11 +862,12 @@ ihdr = struct.pack(">IIBBBBB", 512, 512, 8, 3, 0, 0, 0)
 with open(sys.argv[1], "wb") as f:
     f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"PLTE", plte) + chunk(b"tRNS", trns) + chunk(b"IDAT", zlib.compress(bytes(rows), 1)) + chunk(b"IEND", b""))
 
-# 512x512 16-bit RGB PNG
+# 512x512 16-bit RGB PNG with linear gAMA=1.0 chunk
 ihdr16 = struct.pack(">IIBBBBB", 512, 512, 16, 2, 0, 0, 0)
+gama16 = struct.pack(">I", 100000)
 row16 = b"\x00" + struct.pack(">HHH", 0x3300, 0x6600, 0x9900) * 512
 with open(sys.argv[2], "wb") as f:
-    f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr16) + chunk(b"IDAT", zlib.compress(row16 * 512, 1)) + chunk(b"IEND", b""))
+    f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr16) + chunk(b"gAMA", gama16) + chunk(b"IDAT", zlib.compress(row16 * 512, 1)) + chunk(b"IEND", b""))
 "#;
     let rgb16_png = tmp.path().join("rgb16.png");
     assert!(
@@ -911,7 +913,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("ri", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-w, h, rgba = mod.decode_png_rgba8(Path(sys.argv[2]).read_bytes())
+w, h, rgba, _ = mod.decode_png_rgba8(Path(sys.argv[2]).read_bytes())
 assert (w, h) == (192, 192)
 assert rgba[3] == 0, f"expected transparent top-left pixel, got alpha={rgba[3]}"
 center = (100 * w + 100) * 4
@@ -932,6 +934,30 @@ assert rgba[center + 3] == 255, f"expected opaque center pixel, got alpha={rgba[
                 "palette+tRNS transparency was not preserved"
             );
         }
+        if label == "16-bit RGB" {
+            let check_gama = r#"
+import importlib.util, struct, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ri", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+for p in sys.argv[2:]:
+    _, _, _, chunks = mod.decode_png_rgba8(Path(p).read_bytes())
+    assert (b"gAMA", struct.pack(">I", 100000)) in chunks, f"gAMA missing in {p}: {chunks}"
+"#;
+            let status = std::process::Command::new("python3")
+                .args([
+                    "-B",
+                    "-c",
+                    check_gama,
+                    script.to_str().unwrap(),
+                    out_dir.join("icon-512.png").to_str().unwrap(),
+                    out_dir.join("icon-192.png").to_str().unwrap(),
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success(), "gAMA color-space chunk was not preserved");
+        }
     }
 
     // 4. Reject identical icon when --reject-sha256 matches rendered RGBA pixels
@@ -945,7 +971,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("ri", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-_, _, rgba = mod.decode_png_rgba8(Path(sys.argv[2]).read_bytes())
+_, _, rgba, _ = mod.decode_png_rgba8(Path(sys.argv[2]).read_bytes())
 print(hashlib.sha256(rgba).hexdigest(), end="")
 "#,
             script.to_str().unwrap(),

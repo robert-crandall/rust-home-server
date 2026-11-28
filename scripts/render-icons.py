@@ -32,7 +32,9 @@ def _paeth(a: int, b: int, c: int) -> int:
     return c
 
 
-def decode_png_rgba8(data: bytes) -> tuple[int, int, bytearray]:
+def decode_png_rgba8(
+    data: bytes,
+) -> tuple[int, int, bytearray, list[tuple[bytes, bytes]]]:
     if len(data) < 33 or data[:8] != PNG_SIG:
         raise IconError("input must be a valid PNG file (non-PNG or SVG files are not supported)")
 
@@ -42,6 +44,7 @@ def decode_png_rgba8(data: bytes) -> tuple[int, int, bytearray]:
     saw_iend = False
     palette: bytes | None = None
     trns: bytes | None = None
+    color_chunks: list[tuple[bytes, bytes]] = []
     idat_parts: list[bytes] = []
 
     while pos + 12 <= len(data):
@@ -71,6 +74,8 @@ def decode_png_rgba8(data: bytes) -> tuple[int, int, bytearray]:
             palette = chunk
         elif ctype == b"tRNS":
             trns = chunk
+        elif ctype in (b"sRGB", b"iCCP", b"cICP", b"gAMA", b"cHRM") and not idat_parts:
+            color_chunks.append((ctype, chunk))
         elif ctype == b"IDAT":
             idat_parts.append(chunk)
         elif ctype == b"IEND":
@@ -147,9 +152,22 @@ def decode_png_rgba8(data: bytes) -> tuple[int, int, bytearray]:
         unfiltered[out_start : out_start + stride] = row
         prev = row
 
+    # Keep only color-space chunks valid for RGBA8 output (grayscale iCCP profiles cannot tag RGBA).
+    kept_color_chunks: list[tuple[bytes, bytes]] = []
+    seen_types: set[bytes] = set()
+    for ctype, payload in color_chunks:
+        if ctype == b"iCCP" and color_type in (0, 4):
+            raise IconError(
+                "grayscale PNGs with ICC profiles are not supported; re-export as sRGB RGBA PNG"
+            )
+        if ctype in seen_types or (ctype == b"iCCP" and b"sRGB" in seen_types) or (ctype == b"sRGB" and b"iCCP" in seen_types):
+            continue
+        seen_types.add(ctype)
+        kept_color_chunks.append((ctype, payload))
+
     # Convert to RGBA8.
     if color_type == 6 and bit_depth == 8:
-        return width, height, unfiltered
+        return width, height, unfiltered, kept_color_chunks
 
     rgba = bytearray(width * height * 4)
     pixel_count = width * height
@@ -224,7 +242,7 @@ def decode_png_rgba8(data: bytes) -> tuple[int, int, bytearray]:
                 v = v16 >> 8
                 rgba[di : di + 4] = bytes((v, v, v, a))
 
-    return width, height, rgba
+    return width, height, rgba, kept_color_chunks
 
 
 def _axis_spans(src_len: int, dst_len: int) -> list[list[tuple[int, float]]]:
@@ -299,7 +317,12 @@ def downsample_square_rgba8(src_size: int, rgba: bytearray, dst_size: int) -> by
     return out
 
 
-def encode_png_rgba8(width: int, height: int, rgba: bytearray) -> bytes:
+def encode_png_rgba8(
+    width: int,
+    height: int,
+    rgba: bytearray,
+    color_chunks: list[tuple[bytes, bytes]] | None = None,
+) -> bytes:
     def chunk(ctype: bytes, payload: bytes) -> bytes:
         crc = zlib.crc32(ctype + payload) & 0xFFFFFFFF
         return struct.pack(">I", len(payload)) + ctype + payload + struct.pack(">I", crc)
@@ -314,7 +337,8 @@ def encode_png_rgba8(width: int, height: int, rgba: bytearray) -> bytes:
         raw[dst_start : dst_start + stride] = rgba[src_start : src_start + stride]
 
     idat = zlib.compress(bytes(raw), level=9)
-    return PNG_SIG + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+    extra = b"".join(chunk(ctype, payload) for ctype, payload in (color_chunks or []))
+    return PNG_SIG + chunk(b"IHDR", ihdr) + extra + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
 
 def render_icons(
@@ -325,7 +349,7 @@ def render_icons(
         raise IconError(f"icon file not found: {icon_path}")
 
     source_bytes = expanded.read_bytes()
-    width, height, rgba = decode_png_rgba8(source_bytes)
+    width, height, rgba, color_chunks = decode_png_rgba8(source_bytes)
 
     if width != height:
         raise IconError(f"icon must be square, got {width}x{height}")
@@ -344,8 +368,8 @@ def render_icons(
             )
 
     rgba_192 = downsample_square_rgba8(512, rgba_512, 192)
-    png_512 = encode_png_rgba8(512, 512, rgba_512)
-    png_192 = encode_png_rgba8(192, 192, rgba_192)
+    png_512 = encode_png_rgba8(512, 512, rgba_512, color_chunks)
+    png_192 = encode_png_rgba8(192, 192, rgba_192, color_chunks)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "icon-512.png").write_bytes(png_512)
