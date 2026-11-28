@@ -613,6 +613,30 @@ fn init_script_renames_template_cleanly() {
     assert_eq!(png_dimensions(&new_192), Some((192, 192)));
     assert_ne!(new_512, orig_512, "icon-512.png must be replaced");
     assert_ne!(new_192, orig_192, "icon-192.png must be replaced");
+    let check_color = r#"
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ri", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+w, h, rgba = mod.decode_png_rgba8(Path(sys.argv[2]).read_bytes())
+idx = ((h // 2) * w + (w // 2)) * 4
+assert list(rgba[idx:idx+4]) == [40, 120, 210, 255], f"unexpected pixel {list(rgba[idx:idx+4])}"
+"#;
+    assert!(
+        std::process::Command::new("python3")
+            .args([
+                "-B",
+                "-c",
+                check_color,
+                dir.path().join("scripts/render-icons.py").to_str().unwrap(),
+                dir.path().join("web/public/icon-192.png").to_str().unwrap(),
+            ])
+            .status()
+            .expect("verify rendered pixel color")
+            .success(),
+        "rendered icon-192.png did not contain the supplied input icon color"
+    );
 
     assert_eq!(
         std::fs::read(&planted_path).expect("read planted png"),
@@ -644,7 +668,7 @@ fn init_script_requires_new_icon_without_modifying_tree() {
             .success()
     );
 
-    let cases: [(&str, Vec<&str>, &str); 6] = [
+    let cases: [(&str, Vec<&str>, &str); 7] = [
         (
             "missing ICON",
             vec![
@@ -653,6 +677,17 @@ fn init_script_requires_new_icon_without_modifying_tree() {
                 "Chore Board",
             ],
             "Usage:",
+        ),
+        (
+            "flag-like ICON (--help)",
+            vec![
+                "scripts/init.sh",
+                "github.com/acme/chore-board",
+                "Chore Board",
+                "",
+                "--help",
+            ],
+            "icon file not found",
         ),
         (
             "unchanged template icon",
