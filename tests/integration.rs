@@ -546,13 +546,18 @@ with open(path, "wb") as f:
 
 #[test]
 fn init_script_renames_template_cleanly() {
+    if env!("CARGO_PKG_NAME") != concat!("rust-home-", "server") {
+        return;
+    }
     let dir = copy_template_repo();
     let orig_512 = std::fs::read(dir.path().join("web/public/icon-512.png")).expect("orig 512");
     let orig_192 = std::fs::read(dir.path().join("web/public/icon-192.png")).expect("orig 192");
 
     // Plant a tracked binary PNG containing the template name bytes to verify binary files are skipped.
     let planted_path = dir.path().join("web/public/keep-binary.png");
-    let planted_bytes = b"\x89PNG\r\n\x1a\nRust Home Server rust-home-server".to_vec();
+    let marker = "Rust Home Server rust-home-server";
+    let mut planted_bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    planted_bytes.extend_from_slice(marker.as_bytes());
     std::fs::write(&planted_path, &planted_bytes).expect("write planted png");
     assert!(
         std::process::Command::new("git")
@@ -647,6 +652,9 @@ assert list(rgba[idx:idx+4]) == [40, 120, 210, 255], f"unexpected pixel {list(rg
 
 #[test]
 fn init_script_requires_new_icon_without_modifying_tree() {
+    if env!("CARGO_PKG_NAME") != concat!("rust-home-", "server") {
+        return;
+    }
     let dir = copy_template_repo();
     assert!(
         std::process::Command::new("git")
