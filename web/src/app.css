@@ -33,6 +33,7 @@
     opacity: 1;
   }
 
+  button:focus-visible,
   .btn:focus-visible,
   .input:focus-visible,
   .select:focus-visible,
