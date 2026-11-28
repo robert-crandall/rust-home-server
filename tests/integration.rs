@@ -642,7 +642,7 @@ fn init_script_requires_new_icon_without_modifying_tree() {
             .success()
     );
 
-    let cases: [(&str, Vec<&str>); 3] = [
+    let cases: [(&str, Vec<&str>, &str); 3] = [
         (
             "missing ICON",
             vec![
@@ -650,6 +650,7 @@ fn init_script_requires_new_icon_without_modifying_tree() {
                 "github.com/acme/chore-board",
                 "Chore Board",
             ],
+            "Usage:",
         ),
         (
             "unchanged template icon",
@@ -660,6 +661,7 @@ fn init_script_requires_new_icon_without_modifying_tree() {
                 "",
                 "web/public/icon-512.png",
             ],
+            "default template icon",
         ),
         (
             "quoted NAME",
@@ -670,10 +672,11 @@ fn init_script_requires_new_icon_without_modifying_tree() {
                 "",
                 "web/public/icon-512.png",
             ],
+            "NAME must not contain",
         ),
     ];
 
-    for (label, args) in cases {
+    for (label, args, want_stderr) in cases {
         let output = std::process::Command::new("bash")
             .args(&args)
             .current_dir(dir.path())
@@ -682,6 +685,11 @@ fn init_script_requires_new_icon_without_modifying_tree() {
         assert!(
             !output.status.success(),
             "expected scripts/init.sh to fail for {label}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(want_stderr),
+            "expected stderr for {label} to contain {want_stderr:?}, got: {stderr}"
         );
 
         let status_out = std::process::Command::new("git")

@@ -80,6 +80,8 @@ def decode_png_rgba8(data: bytes) -> tuple[int, int, bytearray]:
         raise IconError("incomplete PNG file")
     if width == 0 or height == 0:
         raise IconError("PNG has zero dimensions")
+    if width > MAX_SIZE or height > MAX_SIZE:
+        raise IconError(f"icon must be at most {MAX_SIZE}x{MAX_SIZE}, got {width}x{height}")
     if interlace != 0:
         raise IconError("interlaced PNGs are not supported; re-export as a non-interlaced 8-bit PNG")
 
@@ -100,11 +102,12 @@ def decode_png_rgba8(data: bytes) -> tuple[int, int, bytearray]:
     expected_raw_len = height * (1 + stride)
 
     try:
-        raw = zlib.decompress(b"".join(idat_parts))
+        decoder = zlib.decompressobj()
+        raw = decoder.decompress(b"".join(idat_parts), expected_raw_len + 1)
     except zlib.error as exc:
         raise IconError(f"corrupt PNG image data: {exc}") from exc
 
-    if len(raw) != expected_raw_len:
+    if len(raw) != expected_raw_len or not decoder.eof:
         raise IconError("PNG image data size does not match header dimensions")
 
     # Unfilter scanlines.

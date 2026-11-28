@@ -212,8 +212,10 @@ mod tests {
         let index = WebAssets::get("index.html").expect("index.html embedded");
         let html = std::str::from_utf8(index.data.as_ref()).expect("index.html UTF-8");
         assert!(
-            html.contains(r#"rel="manifest" href="/manifest.webmanifest""#),
-            "index.html must link /manifest.webmanifest"
+            html.contains(
+                r#"rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials""#
+            ),
+            "index.html must link /manifest.webmanifest with use-credentials"
         );
         assert!(
             html.contains(r#"rel="apple-touch-icon" href="/icon-192.png""#),

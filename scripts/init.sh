@@ -11,8 +11,8 @@ if [[ -z "$MODULE" || -z "$NAME" || -z "$ICON" ]]; then
   exit 1
 fi
 
-if [[ "$NAME" == *\"* || "$NAME" == *\\* || "$NAME" == *$'\n'* || "$NAME" == *$'\r'* ]]; then
-  echo "Error: NAME must not contain quotes, backslashes, or newlines." >&2
+if [[ "$NAME" == *\"* || "$NAME" == *\\* || "$NAME" == *[[:cntrl:]]* ]]; then
+  echo "Error: NAME must not contain quotes, backslashes, or control characters." >&2
   exit 1
 fi
 
