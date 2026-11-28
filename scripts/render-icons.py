@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import struct
 import sys
@@ -317,7 +318,7 @@ def encode_png_rgba8(width: int, height: int, rgba: bytearray) -> bytes:
 
 
 def render_icons(
-    icon_path: Path, out_dir: Path, reject_same_as: Path | None = None
+    icon_path: Path, out_dir: Path, reject_sha256: str | None = None
 ) -> None:
     expanded = Path(os.path.expanduser(str(icon_path)))
     if not expanded.is_file():
@@ -335,9 +336,9 @@ def render_icons(
 
     rgba_512 = downsample_square_rgba8(width, rgba, 512)
 
-    if reject_same_as is not None and reject_same_as.is_file():
-        ew, eh, existing_rgba = decode_png_rgba8(reject_same_as.read_bytes())
-        if ew == 512 and eh == 512 and rgba_512 == existing_rgba:
+    if reject_sha256 is not None:
+        digest = hashlib.sha256(rgba_512).hexdigest()
+        if digest == reject_sha256.lower():
             raise IconError(
                 "ICON matches the default template icon; provide a new icon for your app"
             )
@@ -362,18 +363,14 @@ def main(argv: list[str]) -> int:
         help="Directory to write icon-512.png and icon-192.png (default: web/public)",
     )
     parser.add_argument(
-        "--reject-same-as",
+        "--reject-sha256",
         default=None,
-        help="Reject if the rendered 512x512 icon matches this existing PNG",
+        help="Reject if the rendered 512x512 RGBA pixel SHA-256 matches this hex digest",
     )
     args = parser.parse_args(argv)
 
     try:
-        render_icons(
-            Path(args.icon),
-            Path(args.out_dir),
-            Path(args.reject_same_as) if args.reject_same_as else None,
-        )
+        render_icons(Path(args.icon), Path(args.out_dir), args.reject_sha256)
     except IconError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

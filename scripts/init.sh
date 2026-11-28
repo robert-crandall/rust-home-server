@@ -45,7 +45,8 @@ echo "  Crate/DB   : $OLD_CRATE -> $CRATE_SLUG"
 echo "  Icon       : $ICON"
 
 # Validate and render the new app icon before rewriting any tracked text files.
-python3 scripts/render-icons.py --reject-same-as web/public/icon-512.png "$ICON"
+TEMPLATE_ICON_SHA256="5fb0b4ada14a40a07f1232a096f3a154e86ed011f287a13b29763282da973a4d"
+python3 -B scripts/render-icons.py --reject-sha256 "$TEMPLATE_ICON_SHA256" "$ICON"
 
 FILES=()
 while IFS= read -r file; do

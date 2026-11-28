@@ -631,6 +631,8 @@ fn init_script_requires_new_icon_without_modifying_tree() {
                 "user.name=Test",
                 "-c",
                 "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
                 "commit",
                 "-q",
                 "-m",
@@ -642,7 +644,7 @@ fn init_script_requires_new_icon_without_modifying_tree() {
             .success()
     );
 
-    let cases: [(&str, Vec<&str>, &str); 3] = [
+    let cases: [(&str, Vec<&str>, &str); 6] = [
         (
             "missing ICON",
             vec![
@@ -669,6 +671,39 @@ fn init_script_requires_new_icon_without_modifying_tree() {
                 "scripts/init.sh",
                 "github.com/acme/chore-board",
                 "Chore \"Board\"",
+                "",
+                "web/public/icon-512.png",
+            ],
+            "NAME must not contain",
+        ),
+        (
+            "backslash NAME",
+            vec![
+                "scripts/init.sh",
+                "github.com/acme/chore-board",
+                "Chore\\Board",
+                "",
+                "web/public/icon-512.png",
+            ],
+            "NAME must not contain",
+        ),
+        (
+            "tab NAME",
+            vec![
+                "scripts/init.sh",
+                "github.com/acme/chore-board",
+                "Chore\tBoard",
+                "",
+                "web/public/icon-512.png",
+            ],
+            "NAME must not contain",
+        ),
+        (
+            "newline NAME",
+            vec![
+                "scripts/init.sh",
+                "github.com/acme/chore-board",
+                "Chore\nBoard",
                 "",
                 "web/public/icon-512.png",
             ],
@@ -855,21 +890,42 @@ assert rgba[center + 3] == 255, f"expected opaque center pixel, got alpha={rgba[
         }
     }
 
-    // 4. Reject identical icon when --reject-same-as is supplied
+    // 4. Reject identical icon when --reject-sha256 matches rendered RGBA pixels
+    let digest_out = std::process::Command::new("python3")
+        .args([
+            "-B",
+            "-c",
+            r#"
+import hashlib, importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ri", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+_, _, rgba = mod.decode_png_rgba8(Path(sys.argv[2]).read_bytes())
+print(hashlib.sha256(rgba).hexdigest(), end="")
+"#,
+            script.to_str().unwrap(),
+            out_dir.join("icon-512.png").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(digest_out.status.success());
+    let digest = String::from_utf8(digest_out.stdout).unwrap();
     assert!(
         !std::process::Command::new("python3")
             .args([
+                "-B",
                 script.to_str().unwrap(),
                 "--out-dir",
                 out_dir.to_str().unwrap(),
-                "--reject-same-as",
-                out_dir.join("icon-512.png").to_str().unwrap(),
+                "--reject-sha256",
+                &digest,
                 rgb16_png.to_str().unwrap(),
             ])
             .status()
             .unwrap()
             .success(),
-        "--reject-same-as should reject an identical rendered icon"
+        "--reject-sha256 should reject an identical rendered icon"
     );
 }
 

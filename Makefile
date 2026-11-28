@@ -11,7 +11,7 @@ init: ## Initialize template (MODULE=github.com/you/app NAME="My App" ICON=path/
 
 icons: ## Regenerate PWA icons from a square PNG >= 512x512 (ICON=path/to/icon.png)
 	@test -n "$(ICON)" || { echo "Usage: make icons ICON=path/to/icon.png" >&2; exit 1; }
-	@python3 scripts/render-icons.py "$(ICON)"
+	@python3 -B scripts/render-icons.py "$(ICON)"
 
 setup: ## First run after cloning: frontend deps, .env, and an initial frontend build
 	cd web && bun install --frozen-lockfile
@@ -43,7 +43,7 @@ run: ## Run the release binary built by `make build`
 dev: ## Run Vite on :5173 with the Rust API server on :8080
 	@scripts/dev.sh
 
-web/build/index.html: web/index.html $(wildcard web/public/*)
+web/build/index.html: web/index.html web/public/manifest.webmanifest web/public/icon-192.png web/public/icon-512.png web/public/theme.js
 	cd web && bun run build
 
 test: web/build/index.html ## Run Rust unit/integration tests and frontend Vitest suite
