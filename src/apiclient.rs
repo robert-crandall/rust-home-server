@@ -56,7 +56,14 @@ impl ClientConfig {
         env_cf_id: Option<String>,
         env_cf_secret: Option<String>,
     ) -> Result<Self, String> {
-        let file_cfg = {
+        let skip_default_file = config_path.is_none()
+            && env_url.is_some()
+            && env_token.is_some()
+            && (env_cf_id.is_some() || env_cf_secret.is_some());
+
+        let file_cfg = if skip_default_file {
+            None
+        } else {
             let resolved_path = match config_path {
                 Some(p) => Some(p.to_path_buf()),
                 None => match Self::default_path() {
@@ -99,8 +106,7 @@ impl ClientConfig {
         let (raw_cf_id, raw_cf_secret) = if env_cf_id.is_some() || env_cf_secret.is_some() {
             (env_cf_id, env_cf_secret)
         } else {
-            let allow_file_cf = config_path.is_some()
-                || env_url.is_none()
+            let allow_file_cf = env_url.is_none()
                 || file_cfg
                     .as_ref()
                     .and_then(|c| c.app_url.as_deref())
@@ -483,6 +489,18 @@ mod tests {
         assert_eq!(inherited.token, "pat_new");
         assert_eq!(inherited.cf_access_client_id.as_deref(), Some("id-1"));
         assert_eq!(inherited.cf_access_client_secret.as_deref(), Some("sec-1"));
+
+        // Different-origin URL override must NOT inherit file CF credentials even with explicit config
+        let cross_origin = ClientConfig::load_with_env(
+            Some(&full_path),
+            Some("http://127.0.0.1:8080".to_string()),
+            Some("pat_local".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(cross_origin.cf_access_client_id, None);
+        assert_eq!(cross_origin.cf_access_client_secret, None);
 
         let half_cfg = ClientConfig {
             app_url: "https://app.example.com".to_string(),
