@@ -475,8 +475,16 @@ fn notify_decision_script_matrix() {
     }
 }
 
-#[test]
-fn init_script_renames_template_cleanly() {
+fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 24 || &bytes[0..8] != b"\x89PNG\r\n\x1a\n" || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+    Some((width, height))
+}
+
+fn copy_template_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = repo_root();
 
@@ -504,11 +512,74 @@ fn init_script_renames_template_cleanly() {
         .expect("git add");
     assert!(git_add.success());
 
+    dir
+}
+
+fn write_solid_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: [u8; 4]) {
+    let script = r#"
+import struct, sys, zlib
+path, w, h, r, g, b, a = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]), int(sys.argv[7])
+def chunk(t, d):
+    return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
+row = b"\x00" + bytes((r, g, b, a)) * w
+idat = zlib.compress(row * h, level=1)
+with open(path, "wb") as f:
+    f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b""))
+"#;
+    let status = std::process::Command::new("python3")
+        .args([
+            "-c",
+            script,
+            path.to_str().expect("utf8 path"),
+            &width.to_string(),
+            &height.to_string(),
+            &rgba[0].to_string(),
+            &rgba[1].to_string(),
+            &rgba[2].to_string(),
+            &rgba[3].to_string(),
+        ])
+        .status()
+        .expect("write test png");
+    assert!(status.success(), "failed to write test PNG");
+}
+
+#[test]
+fn init_script_renames_template_cleanly() {
+    if env!("CARGO_PKG_NAME") != concat!("rust-home-", "server") {
+        return;
+    }
+    let dir = copy_template_repo();
+    let orig_512 = std::fs::read(dir.path().join("web/public/icon-512.png")).expect("orig 512");
+    let orig_192 = std::fs::read(dir.path().join("web/public/icon-192.png")).expect("orig 192");
+
+    // Plant a tracked binary PNG (uppercase .PNG) containing the template name bytes to verify
+    // case-insensitive binary PNG exclusion.
+    let planted_path = dir.path().join("web/public/keep-binary.PNG");
+    let marker = "Rust Home Server rust-home-server";
+    let mut planted_bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    planted_bytes.extend_from_slice(marker.as_bytes());
+    std::fs::write(&planted_path, &planted_bytes).expect("write planted png");
+    assert!(
+        std::process::Command::new("git")
+            .args(["add", "web/public/keep-binary.PNG"])
+            .current_dir(dir.path())
+            .status()
+            .expect("git add planted png")
+            .success()
+    );
+
+    let icon_dir = tempfile::tempdir().expect("icon tempdir");
+    let custom_icon = icon_dir.path().join("my app icon.png");
+    write_solid_rgba_png(&custom_icon, 600, 600, [40, 120, 210, 255]);
+
     let output = std::process::Command::new("bash")
         .args([
             "scripts/init.sh",
             "github.com/acme/chore-board",
             "Chore Board",
+            "",
+            custom_icon.to_str().expect("custom icon path"),
         ])
         .current_dir(dir.path())
         .output()
@@ -533,6 +604,399 @@ fn init_script_renames_template_cleanly() {
     let auth_rs =
         std::fs::read_to_string(dir.path().join("src/auth.rs")).expect("read renamed src/auth.rs");
     assert!(auth_rs.contains("pub const SESSION_COOKIE_NAME: &str = \"chore_board_session\";"));
+
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("web/public/manifest.webmanifest"))
+            .expect("read renamed manifest.webmanifest"),
+    )
+    .expect("renamed manifest.webmanifest must be valid JSON");
+    assert_eq!(manifest["name"].as_str(), Some("Chore Board"));
+    assert_eq!(manifest["short_name"].as_str(), Some("Chore Board"));
+
+    let new_512 = std::fs::read(dir.path().join("web/public/icon-512.png")).expect("new 512");
+    let new_192 = std::fs::read(dir.path().join("web/public/icon-192.png")).expect("new 192");
+    assert_eq!(png_dimensions(&new_512), Some((512, 512)));
+    assert_eq!(png_dimensions(&new_192), Some((192, 192)));
+    assert_ne!(new_512, orig_512, "icon-512.png must be replaced");
+    assert_ne!(new_192, orig_192, "icon-192.png must be replaced");
+    let check_color = r#"
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ri", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+w, h, rgba, _ = mod.decode_png_rgba8(Path(sys.argv[2]).read_bytes())
+idx = ((h // 2) * w + (w // 2)) * 4
+assert list(rgba[idx:idx+4]) == [40, 120, 210, 255], f"unexpected pixel {list(rgba[idx:idx+4])}"
+"#;
+    assert!(
+        std::process::Command::new("python3")
+            .args([
+                "-B",
+                "-c",
+                check_color,
+                dir.path().join("scripts/render-icons.py").to_str().unwrap(),
+                dir.path().join("web/public/icon-192.png").to_str().unwrap(),
+            ])
+            .status()
+            .expect("verify rendered pixel color")
+            .success(),
+        "rendered icon-192.png did not contain the supplied input icon color"
+    );
+
+    assert_eq!(
+        std::fs::read(&planted_path).expect("read planted png"),
+        planted_bytes,
+        "unrelated tracked PNG must stay byte-identical"
+    );
+}
+
+#[test]
+fn init_script_requires_new_icon_without_modifying_tree() {
+    if env!("CARGO_PKG_NAME") != concat!("rust-home-", "server") {
+        return;
+    }
+    let dir = copy_template_repo();
+    assert!(
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "baseline",
+            ])
+            .current_dir(dir.path())
+            .status()
+            .expect("git commit baseline")
+            .success()
+    );
+
+    let cases: [(&str, Vec<&str>, &str); 7] = [
+        (
+            "missing ICON",
+            vec![
+                "scripts/init.sh",
+                "github.com/acme/chore-board",
+                "Chore Board",
+            ],
+            "Usage:",
+        ),
+        (
+            "flag-like ICON (--help)",
+            vec![
+                "scripts/init.sh",
+                "github.com/acme/chore-board",
+                "Chore Board",
+                "",
+                "--help",
+            ],
+            "icon file not found",
+        ),
+        (
+            "unchanged template icon",
+            vec![
+                "scripts/init.sh",
+                "github.com/acme/chore-board",
+                "Chore Board",
+                "",
+                "web/public/icon-512.png",
+            ],
+            "default template icon",
+        ),
+        (
+            "quoted NAME",
+            vec![
+                "scripts/init.sh",
+                "github.com/acme/chore-board",
+                "Chore \"Board\"",
+                "",
+                "web/public/icon-512.png",
+            ],
+            "NAME must not contain",
+        ),
+        (
+            "backslash NAME",
+            vec![
+                "scripts/init.sh",
+                "github.com/acme/chore-board",
+                "Chore\\Board",
+                "",
+                "web/public/icon-512.png",
+            ],
+            "NAME must not contain",
+        ),
+        (
+            "tab NAME",
+            vec![
+                "scripts/init.sh",
+                "github.com/acme/chore-board",
+                "Chore\tBoard",
+                "",
+                "web/public/icon-512.png",
+            ],
+            "NAME must not contain",
+        ),
+        (
+            "newline NAME",
+            vec![
+                "scripts/init.sh",
+                "github.com/acme/chore-board",
+                "Chore\nBoard",
+                "",
+                "web/public/icon-512.png",
+            ],
+            "NAME must not contain",
+        ),
+    ];
+
+    for (label, args, want_stderr) in cases {
+        let output = std::process::Command::new("bash")
+            .args(&args)
+            .env_remove("ICON")
+            .current_dir(dir.path())
+            .output()
+            .expect("run scripts/init.sh");
+        assert!(
+            !output.status.success(),
+            "expected scripts/init.sh to fail for {label}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(want_stderr),
+            "expected stderr for {label} to contain {want_stderr:?}, got: {stderr}"
+        );
+
+        let status_out = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(dir.path())
+            .output()
+            .expect("git status");
+        assert!(
+            status_out.stdout.is_empty(),
+            "failed init ({label}) left modified files: {}",
+            String::from_utf8_lossy(&status_out.stdout)
+        );
+    }
+}
+
+#[test]
+fn render_icons_script_validates_and_renders_variants() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let script = repo_root().join("scripts/render-icons.py");
+    let out_dir = tmp.path().join("out");
+
+    // 1. Reject non-PNG (e.g. SVG)
+    let svg_path = tmp.path().join("icon.svg");
+    std::fs::write(&svg_path, "<svg xmlns=\"http://www.w3.org/2000/svg\"/>").unwrap();
+    assert!(
+        !std::process::Command::new("python3")
+            .args([
+                script.to_str().unwrap(),
+                "--out-dir",
+                out_dir.to_str().unwrap(),
+                svg_path.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap()
+            .success(),
+        "SVG input should be rejected"
+    );
+
+    // 2. Reject non-square and too-small PNGs
+    let rect_png = tmp.path().join("rect.png");
+    write_solid_rgba_png(&rect_png, 600, 512, [10, 20, 30, 255]);
+    assert!(
+        !std::process::Command::new("python3")
+            .args([
+                script.to_str().unwrap(),
+                "--out-dir",
+                out_dir.to_str().unwrap(),
+                rect_png.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap()
+            .success(),
+        "non-square PNG should be rejected"
+    );
+
+    let small_png = tmp.path().join("small.png");
+    write_solid_rgba_png(&small_png, 192, 192, [10, 20, 30, 255]);
+    assert!(
+        !std::process::Command::new("python3")
+            .args([
+                script.to_str().unwrap(),
+                "--out-dir",
+                out_dir.to_str().unwrap(),
+                small_png.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap()
+            .success(),
+        "< 512x512 PNG should be rejected"
+    );
+
+    // 3. Valid indexed palette + tRNS PNG renders 512 and 192 preserving alpha
+    let pal_png = tmp.path().join("palette.png");
+    let make_variants = r#"
+import struct, sys, zlib
+def chunk(t, d):
+    return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+
+# 512x512 indexed PNG: index 0 = transparent, index 1 = opaque teal
+plte = bytes([0, 0, 0, 20, 180, 140])
+trns = bytes([0, 255])
+rows = bytearray()
+for y in range(512):
+    rows.append(0)
+    if y < 64:
+        rows.extend(b"\x00" * 512)
+    else:
+        rows.extend(b"\x01" * 512)
+ihdr = struct.pack(">IIBBBBB", 512, 512, 8, 3, 0, 0, 0)
+with open(sys.argv[1], "wb") as f:
+    f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"PLTE", plte) + chunk(b"tRNS", trns) + chunk(b"IDAT", zlib.compress(bytes(rows), 1)) + chunk(b"IEND", b""))
+
+# 512x512 16-bit RGB PNG with linear gAMA=1.0 chunk
+ihdr16 = struct.pack(">IIBBBBB", 512, 512, 16, 2, 0, 0, 0)
+gama16 = struct.pack(">I", 100000)
+row16 = b"\x00" + struct.pack(">HHH", 0x3300, 0x6600, 0x9900) * 512
+with open(sys.argv[2], "wb") as f:
+    f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr16) + chunk(b"gAMA", gama16) + chunk(b"IDAT", zlib.compress(row16 * 512, 1)) + chunk(b"IEND", b""))
+"#;
+    let rgb16_png = tmp.path().join("rgb16.png");
+    assert!(
+        std::process::Command::new("python3")
+            .args([
+                "-c",
+                make_variants,
+                pal_png.to_str().unwrap(),
+                rgb16_png.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    for (label, path) in [("palette+tRNS", &pal_png), ("16-bit RGB", &rgb16_png)] {
+        let out = std::process::Command::new("python3")
+            .args([
+                script.to_str().unwrap(),
+                "--out-dir",
+                out_dir.to_str().unwrap(),
+                path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "render-icons.py failed for {label}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            png_dimensions(&std::fs::read(out_dir.join("icon-512.png")).unwrap()),
+            Some((512, 512))
+        );
+        assert_eq!(
+            png_dimensions(&std::fs::read(out_dir.join("icon-192.png")).unwrap()),
+            Some((192, 192))
+        );
+        if label == "palette+tRNS" {
+            let check_alpha = r#"
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ri", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+w, h, rgba, _ = mod.decode_png_rgba8(Path(sys.argv[2]).read_bytes())
+assert (w, h) == (192, 192)
+assert rgba[3] == 0, f"expected transparent top-left pixel, got alpha={rgba[3]}"
+center = (100 * w + 100) * 4
+assert rgba[center + 3] == 255, f"expected opaque center pixel, got alpha={rgba[center + 3]}"
+"#;
+            let status = std::process::Command::new("python3")
+                .args([
+                    "-B",
+                    "-c",
+                    check_alpha,
+                    script.to_str().unwrap(),
+                    out_dir.join("icon-192.png").to_str().unwrap(),
+                ])
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "palette+tRNS transparency was not preserved"
+            );
+        }
+        if label == "16-bit RGB" {
+            let check_gama = r#"
+import importlib.util, struct, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ri", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+for p in sys.argv[2:]:
+    _, _, _, chunks = mod.decode_png_rgba8(Path(p).read_bytes())
+    assert (b"gAMA", struct.pack(">I", 100000)) in chunks, f"gAMA missing in {p}: {chunks}"
+"#;
+            let status = std::process::Command::new("python3")
+                .args([
+                    "-B",
+                    "-c",
+                    check_gama,
+                    script.to_str().unwrap(),
+                    out_dir.join("icon-512.png").to_str().unwrap(),
+                    out_dir.join("icon-192.png").to_str().unwrap(),
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success(), "gAMA color-space chunk was not preserved");
+        }
+    }
+
+    // 4. Reject identical icon when --reject-sha256 matches rendered RGBA pixels
+    let digest_out = std::process::Command::new("python3")
+        .args([
+            "-B",
+            "-c",
+            r#"
+import hashlib, importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ri", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+_, _, rgba, _ = mod.decode_png_rgba8(Path(sys.argv[2]).read_bytes())
+print(hashlib.sha256(rgba).hexdigest(), end="")
+"#,
+            script.to_str().unwrap(),
+            out_dir.join("icon-512.png").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(digest_out.status.success());
+    let digest = String::from_utf8(digest_out.stdout).unwrap();
+    assert!(
+        !std::process::Command::new("python3")
+            .args([
+                "-B",
+                script.to_str().unwrap(),
+                "--out-dir",
+                out_dir.to_str().unwrap(),
+                "--reject-sha256",
+                &digest,
+                rgb16_png.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap()
+            .success(),
+        "--reject-sha256 should reject an identical rendered icon"
+    );
 }
 
 struct TestDb {
@@ -1013,6 +1477,34 @@ async fn binaries_spa_healthcheck_and_mcp_stdio_end_to_end() {
         .await
         .unwrap();
     assert_eq!(theme_js.status(), StatusCode::OK);
+
+    let manifest_resp = http
+        .get(format!("{base_url}/manifest.webmanifest"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(manifest_resp.status(), StatusCode::OK);
+    assert_eq!(
+        manifest_resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/manifest+json")
+    );
+
+    let icon_resp = http
+        .get(format!("{base_url}/icon-192.png"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(icon_resp.status(), StatusCode::OK);
+    assert_eq!(
+        icon_resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("image/png")
+    );
 
     let api_404 = http
         .get(format!("{base_url}/api/does-not-exist"))

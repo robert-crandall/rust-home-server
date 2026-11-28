@@ -43,7 +43,7 @@ export function AppShell(props: { user: User }) {
             class="inline-flex items-center gap-2.5 font-bold text-lg tracking-tight bg-transparent border-0 p-0 text-base-content cursor-pointer rounded-md hover:opacity-80"
             onClick={() => setView("home")}
           >
-            <img class="size-7 rounded-md shrink-0" src="/icon.svg" alt="" />
+            <img class="size-7 rounded-md shrink-0" src="/icon-192.png" alt="" />
             <span>Rust Home Server</span>
           </button>
 

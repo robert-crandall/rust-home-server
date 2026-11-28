@@ -1,4 +1,4 @@
-.PHONY: help init setup build install-mcp mcp-token mcp-config run dev test check spec clean
+.PHONY: help init icons setup build install-mcp mcp-token mcp-config run dev test check spec clean
 
 .DELETE_ON_ERROR:
 
@@ -6,8 +6,14 @@ help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-init: ## Initialize template (MODULE=github.com/you/app NAME="My App" [SLUG=my-app])
-	@scripts/init.sh "$(MODULE)" "$(NAME)" "$(SLUG)"
+export MODULE NAME SLUG ICON
+
+init: ## Initialize template (MODULE=github.com/you/app NAME="My App" ICON=path/to/icon.png [SLUG=my-app])
+	@scripts/init.sh "$${MODULE}" "$${NAME}" "$${SLUG}" "$${ICON}"
+
+icons: ## Regenerate PWA icons from a square PNG >= 512x512 (ICON=path/to/icon.png)
+	@test -n "$${ICON}" || { echo "Usage: make icons ICON=path/to/icon.png" >&2; exit 1; }
+	@python3 -B scripts/render-icons.py -- "$${ICON}"
 
 setup: ## First run after cloning: frontend deps, .env, and an initial frontend build
 	cd web && bun install --frozen-lockfile
@@ -39,7 +45,7 @@ run: ## Run the release binary built by `make build`
 dev: ## Run Vite on :5173 with the Rust API server on :8080
 	@scripts/dev.sh
 
-web/build/index.html:
+web/build/index.html: web/index.html web/public/manifest.webmanifest web/public/icon-192.png web/public/icon-512.png web/public/theme.js
 	cd web && bun run build
 
 test: web/build/index.html ## Run Rust unit/integration tests and frontend Vitest suite

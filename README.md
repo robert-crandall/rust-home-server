@@ -1,4 +1,4 @@
-<img src="assets/icon.svg" width="64" height="64" alt="">
+<img src="web/public/icon-192.png" width="64" height="64" alt="">
 
 # Rust Home Server
 
@@ -9,23 +9,26 @@ Unlike the two-repo `go-home-server` + `go-home-template` split, this template i
 ## Creating a New App from This Template
 
 1. Create a new repository from `robert-crandall/rust-home-server` on GitHub (or clone it directly).
-2. Rename all identifiers, crate names, database names, and MCP binary names in one step:
+2. Prepare a new square PNG icon for your app (at least `512x512`, full-bleed artwork works best on iOS/Android home screens).
+3. Rename all identifiers, crate names, database names, MCP binary names, and PWA icons in one step:
 
 ```bash
-make init MODULE=github.com/robert-crandall/my-app NAME="My App"
+make init MODULE=github.com/robert-crandall/my-app NAME="My App" ICON=path/to/my-icon.png
 make spec
 ```
+
+`make init` rejects the default template icon so every new app ships with its own artwork, generating `web/public/icon-192.png` and `web/public/icon-512.png` automatically. To update the icon later, run `make icons ICON=path/to/new-icon.png`.
 
 ## Tech Stack
 
 - **Backend**: Rust 2024 (`1.95+`), Axum `0.8`, SQLx `0.8` (PostgreSQL `18`), `utoipa` OpenAPI `3.1`, Argon2id cookie sessions + `pat_` personal access tokens, `rust-embed` single-binary SPA serving.
-- **Frontend**: Solid `2.0`, Tailwind CSS `4` + DaisyUI `5`, Vite `8`, Vitest `5`, Bun `1.3`, `openapi-fetch` + `openapi-typescript`.
+- **Frontend**: Solid `2.0`, Tailwind CSS `4` + DaisyUI `5`, Vite `8`, Vitest `5`, Bun `1.3`, `openapi-fetch` + `openapi-typescript`, static installable PWA (`manifest.webmanifest` + 192/512 PNG icons; intentionally no service worker or offline caching, and installable over HTTPS or `localhost`).
 - **MCP Server**: `rust-home-server-mcp` (`rmcp` over local `stdio`), reading credentials from `~/.config/rust-home-server.json` or `MCP_APP_URL` / `MCP_APP_TOKEN`.
 - **Deployment**: Nonroot distroless container (`ghcr.io/robert-crandall/rust-home-server:main`) with built-in healthcheck and Watchtower webhook promotion.
 
 ## Local Development
 
-Prerequisites: Rust `1.95+`, Bun `1.3+`, and PostgreSQL `18+`.
+Prerequisites: Rust `1.95+`, Bun `1.3+`, Python `3` (stdlib only, for `make init` / `make icons`), and PostgreSQL `18+`.
 
 ```bash
 # 1. Install frontend packages, initialize .env, and build web/build once
@@ -39,7 +42,8 @@ Vite serves on `http://localhost:5173` and proxies `/api` and `/healthz` to the 
 
 ### Useful Make Targets
 
-- `make init MODULE=github.com/you/my-app NAME="My App"` - rename the template to your new project.
+- `make init MODULE=github.com/you/my-app NAME="My App" ICON=path/to/icon.png` - rename the template and install your app's PWA icons.
+- `make icons ICON=path/to/icon.png` - regenerate `web/public/icon-192.png` and `web/public/icon-512.png` from a square PNG (`>= 512x512`).
 - `make spec` - regenerate `docs/openapi.json` and `web/src/lib/api/schema.d.ts` from Rust route definitions.
 - `make check` - run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `tsc --noEmit`.
 - `make test` - run Rust tests (`TEST_DATABASE_URL` enables Postgres integration tests) and frontend Vitest tests.
