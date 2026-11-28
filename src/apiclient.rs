@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use url::Url;
 use uuid::Uuid;
@@ -13,12 +13,19 @@ use crate::auth::{CreatedApiToken, User};
 use crate::routes::{CreateTokenRequest, ErrorBody, LoginRequest};
 
 pub const APP_SLUG: &str = "rust-home-server";
+const CF_ACCESS_CLIENT_ID_HEADER: HeaderName = HeaderName::from_static("cf-access-client-id");
+const CF_ACCESS_CLIENT_SECRET_HEADER: HeaderName =
+    HeaderName::from_static("cf-access-client-secret");
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClientConfig {
     pub app_url: String,
     pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cf_access_client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cf_access_client_secret: Option<String>,
 }
 
 impl ClientConfig {
@@ -33,14 +40,10 @@ impl ClientConfig {
     }
 
     pub fn load(config_path: Option<&Path>) -> Result<Self, String> {
-        let env_url = env::var("MCP_APP_URL")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
-        let env_token = env::var("MCP_APP_TOKEN")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
+        let env_url = env_non_empty("MCP_APP_URL");
+        let env_token = env_non_empty("MCP_APP_TOKEN");
+        let env_cf_id = env_non_empty("MCP_CF_ACCESS_CLIENT_ID");
+        let env_cf_secret = env_non_empty("MCP_CF_ACCESS_CLIENT_SECRET");
 
         let file_cfg = if env_url.is_some() && env_token.is_some() {
             None
@@ -71,18 +74,42 @@ impl ClientConfig {
         validate_base_url(&app_url)?;
 
         let token = env_token
-            .or_else(|| file_cfg.and_then(|c| c.token))
+            .or_else(|| file_cfg.as_ref().and_then(|c| c.token.clone()))
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .ok_or_else(|| {
                 "missing token (set MCP_APP_TOKEN or run `make mcp-token` to write ~/.config/rust-home-server.json)".to_string()
             })?;
 
-        Ok(Self { app_url, token })
+        let (raw_cf_id, raw_cf_secret) = if env_cf_id.is_some() || env_cf_secret.is_some() {
+            (env_cf_id, env_cf_secret)
+        } else {
+            (
+                file_cfg
+                    .as_ref()
+                    .and_then(|c| c.cf_access_client_id.clone()),
+                file_cfg
+                    .as_ref()
+                    .and_then(|c| c.cf_access_client_secret.clone()),
+            )
+        };
+        let (cf_access_client_id, cf_access_client_secret) =
+            normalize_cf_service_token(raw_cf_id.as_deref(), raw_cf_secret.as_deref())?;
+
+        Ok(Self {
+            app_url,
+            token,
+            cf_access_client_id,
+            cf_access_client_secret,
+        })
     }
 
     pub fn write_atomic(&self, path: &Path) -> Result<(), String> {
         validate_base_url(&self.app_url)?;
+        normalize_cf_service_token(
+            self.cf_access_client_id.as_deref(),
+            self.cf_access_client_secret.as_deref(),
+        )?;
         let parent = path
             .parent()
             .ok_or_else(|| format!("invalid config path {}", path.display()))?;
@@ -114,6 +141,66 @@ impl ClientConfig {
 struct ClientConfigFile {
     app_url: Option<String>,
     token: Option<String>,
+    cf_access_client_id: Option<String>,
+    cf_access_client_secret: Option<String>,
+}
+
+fn env_non_empty(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+pub fn normalize_cf_service_token(
+    client_id: Option<&str>,
+    client_secret: Option<&str>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let id = client_id
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string);
+    let secret = client_secret
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string);
+
+    match (id, secret) {
+        (Some(id), Some(secret)) => {
+            HeaderValue::from_str(&id).map_err(|_| {
+                "cfAccessClientId contains invalid HTTP header characters".to_string()
+            })?;
+            HeaderValue::from_str(&secret).map_err(|_| {
+                "cfAccessClientSecret contains invalid HTTP header characters".to_string()
+            })?;
+            Ok((Some(id), Some(secret)))
+        }
+        (None, None) => Ok((None, None)),
+        _ => Err(
+            "cfAccessClientId and cfAccessClientSecret must either both be set or both be unset"
+                .to_string(),
+        ),
+    }
+}
+
+fn insert_cf_service_headers(
+    headers: &mut HeaderMap,
+    client_id: Option<&str>,
+    client_secret: Option<&str>,
+) -> Result<(), String> {
+    if let (Some(id), Some(secret)) = normalize_cf_service_token(client_id, client_secret)? {
+        headers.insert(
+            CF_ACCESS_CLIENT_ID_HEADER,
+            HeaderValue::from_str(&id)
+                .map_err(|_| "cfAccessClientId contains invalid HTTP header characters")?,
+        );
+        headers.insert(
+            CF_ACCESS_CLIENT_SECRET_HEADER,
+            HeaderValue::from_str(&secret)
+                .map_err(|_| "cfAccessClientSecret contains invalid HTTP header characters")?,
+        );
+    }
+    Ok(())
 }
 
 fn validate_base_url(raw: &str) -> Result<Url, String> {
@@ -177,6 +264,11 @@ impl ApiClient {
         let bearer = HeaderValue::from_str(&format!("Bearer {}", cfg.token))
             .map_err(|_| "token contains invalid HTTP header characters".to_string())?;
         headers.insert(AUTHORIZATION, bearer);
+        insert_cf_service_headers(
+            &mut headers,
+            cfg.cf_access_client_id.as_deref(),
+            cfg.cf_access_client_secret.as_deref(),
+        )?;
 
         let http = reqwest::Client::builder()
             .default_headers(headers)
@@ -213,11 +305,17 @@ pub async fn mint_token_via_login(
     email: &str,
     password: &str,
     token_name: &str,
+    cf_access_client_id: Option<&str>,
+    cf_access_client_secret: Option<&str>,
 ) -> Result<CreatedApiToken, String> {
     let base = app_url.trim().trim_end_matches('/');
     validate_base_url(base)?;
 
+    let mut headers = HeaderMap::new();
+    insert_cf_service_headers(&mut headers, cf_access_client_id, cf_access_client_secret)?;
+
     let client = reqwest::Client::builder()
+        .default_headers(headers)
         .cookie_store(true)
         .timeout(Duration::from_secs(15))
         .build()
@@ -289,6 +387,8 @@ mod tests {
         let cfg = ClientConfig {
             app_url: "http://127.0.0.1:8080".to_string(),
             token: "pat_00000000-0000-0000-0000-000000000000_secret".to_string(),
+            cf_access_client_id: None,
+            cf_access_client_secret: None,
         };
         cfg.write_atomic(&path).unwrap();
 
@@ -299,11 +399,16 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
 
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("cfAccessClientId"));
+
         // Overwriting an existing config file atomically preserves 0600 mode,
         // while `write_mode_0600` itself refuses pre-existing temp paths/symlinks.
         let updated = ClientConfig {
             app_url: "http://127.0.0.1:8080".to_string(),
             token: "pat_00000000-0000-0000-0000-000000000000_rotated".to_string(),
+            cf_access_client_id: Some("cf-id-123.access".to_string()),
+            cf_access_client_secret: Some("cf-secret-456".to_string()),
         };
         updated.write_atomic(&path).unwrap();
         assert_eq!(ClientConfig::load(Some(&path)).unwrap(), updated);
@@ -311,6 +416,80 @@ mod tests {
         let existing = dir.path().join("preexisting.tmp");
         fs::write(&existing, b"stale").unwrap();
         assert!(write_mode_0600(&existing, b"secret").is_err());
+    }
+
+    #[test]
+    fn rejects_partial_cf_service_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rust-home-server.json");
+        fs::write(
+            &path,
+            r#"{"appUrl":"https://app.example.com","token":"pat_x_y","cfAccessClientId":"only-id"}"#,
+        )
+        .unwrap();
+
+        let err = ClientConfig::load(Some(&path)).unwrap_err();
+        assert!(err.contains("both be set or both be unset"), "got: {err}");
+
+        let half_cfg = ClientConfig {
+            app_url: "https://app.example.com".to_string(),
+            token: "pat_x_y".to_string(),
+            cf_access_client_id: None,
+            cf_access_client_secret: Some("only-secret".to_string()),
+        };
+        assert!(ApiClient::new(&half_cfg).is_err());
+    }
+
+    #[tokio::test]
+    async fn api_client_sends_cf_service_token_and_bearer_headers() {
+        use axum::routing::get;
+        use axum::{Json, Router};
+
+        let app = Router::new().route(
+            "/api/auth/me",
+            get(|headers: axum::http::HeaderMap| async move {
+                assert_eq!(
+                    headers
+                        .get("cf-access-client-id")
+                        .and_then(|v| v.to_str().ok()),
+                    Some("svc-id-123.access")
+                );
+                assert_eq!(
+                    headers
+                        .get("cf-access-client-secret")
+                        .and_then(|v| v.to_str().ok()),
+                    Some("svc-secret-456")
+                );
+                assert_eq!(
+                    headers.get("authorization").and_then(|v| v.to_str().ok()),
+                    Some("Bearer pat_00000000-0000-0000-0000-000000000000_secret")
+                );
+                Json(User {
+                    id: Uuid::nil(),
+                    email: "robert@example.com".to_string(),
+                    name: "Robert".to_string(),
+                    avatar_url: None,
+                    created_at: chrono::Utc::now(),
+                })
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let cfg = ClientConfig {
+            app_url: format!("http://{addr}"),
+            token: "pat_00000000-0000-0000-0000-000000000000_secret".to_string(),
+            cf_access_client_id: Some("svc-id-123.access".to_string()),
+            cf_access_client_secret: Some("svc-secret-456".to_string()),
+        };
+        let client = ApiClient::new(&cfg).unwrap();
+        let me = client.me().await.unwrap();
+        assert_eq!(me.email, "robert@example.com");
+        server.abort();
     }
 
     #[test]
@@ -324,6 +503,8 @@ mod tests {
             let cfg = ClientConfig {
                 app_url: bad.to_string(),
                 token: "pat_00000000-0000-0000-0000-000000000000_secret".to_string(),
+                cf_access_client_id: None,
+                cf_access_client_secret: None,
             };
             assert!(ApiClient::new(&cfg).is_err(), "expected error for {bad}");
         }
