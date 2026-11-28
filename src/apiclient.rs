@@ -40,38 +40,53 @@ impl ClientConfig {
     }
 
     pub fn load(config_path: Option<&Path>) -> Result<Self, String> {
-        let env_url = env_non_empty("MCP_APP_URL");
-        let env_token = env_non_empty("MCP_APP_TOKEN");
-        let env_cf_id = env_non_empty("MCP_CF_ACCESS_CLIENT_ID");
-        let env_cf_secret = env_non_empty("MCP_CF_ACCESS_CLIENT_SECRET");
+        Self::load_with_env(
+            config_path,
+            env_non_empty("MCP_APP_URL"),
+            env_non_empty("MCP_APP_TOKEN"),
+            env_non_empty("MCP_CF_ACCESS_CLIENT_ID"),
+            env_non_empty("MCP_CF_ACCESS_CLIENT_SECRET"),
+        )
+    }
 
-        let file_cfg = if config_path.is_none() && env_url.is_some() && env_token.is_some() {
-            None
-        } else {
-            let path = match config_path {
-                Some(p) => p.to_path_buf(),
-                None => Self::default_path()?,
+    fn load_with_env(
+        config_path: Option<&Path>,
+        env_url: Option<String>,
+        env_token: Option<String>,
+        env_cf_id: Option<String>,
+        env_cf_secret: Option<String>,
+    ) -> Result<Self, String> {
+        let file_cfg = {
+            let resolved_path = match config_path {
+                Some(p) => Some(p.to_path_buf()),
+                None => match Self::default_path() {
+                    Ok(p) => Some(p),
+                    Err(_) if env_url.is_some() && env_token.is_some() => None,
+                    Err(err) => return Err(err),
+                },
             };
-            if path.exists() {
-                let raw = fs::read_to_string(&path)
-                    .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-                let parsed: ClientConfigFile = serde_json::from_str(&raw)
-                    .map_err(|err| format!("invalid config in {}: {err}", path.display()))?;
-                Some(parsed)
-            } else {
-                None
+            match resolved_path {
+                Some(path) if path.exists() => {
+                    let raw = fs::read_to_string(&path)
+                        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+                    let parsed: ClientConfigFile = serde_json::from_str(&raw)
+                        .map_err(|err| format!("invalid config in {}: {err}", path.display()))?;
+                    Some(parsed)
+                }
+                _ => None,
             }
         };
 
         let app_url = env_url
-            .or_else(|| file_cfg.as_ref().and_then(|c| c.app_url.clone()))
+            .as_deref()
+            .or_else(|| file_cfg.as_ref().and_then(|c| c.app_url.as_deref()))
             .map(|v| v.trim().trim_end_matches('/').to_string())
             .filter(|v| !v.is_empty())
             .ok_or_else(|| {
                 "missing appUrl (set MCP_APP_URL or run `make mcp-token` to write ~/.config/rust-home-server.json)".to_string()
             })?;
 
-        validate_base_url(&app_url)?;
+        let parsed_app_url = validate_base_url(&app_url)?;
 
         let token = env_token
             .or_else(|| file_cfg.as_ref().and_then(|c| c.token.clone()))
@@ -84,14 +99,25 @@ impl ClientConfig {
         let (raw_cf_id, raw_cf_secret) = if env_cf_id.is_some() || env_cf_secret.is_some() {
             (env_cf_id, env_cf_secret)
         } else {
-            (
-                file_cfg
+            let allow_file_cf = config_path.is_some()
+                || env_url.is_none()
+                || file_cfg
                     .as_ref()
-                    .and_then(|c| c.cf_access_client_id.clone()),
-                file_cfg
-                    .as_ref()
-                    .and_then(|c| c.cf_access_client_secret.clone()),
-            )
+                    .and_then(|c| c.app_url.as_deref())
+                    .and_then(|raw| validate_base_url(raw.trim().trim_end_matches('/')).ok())
+                    .is_some_and(|file_url| file_url.origin() == parsed_app_url.origin());
+            if allow_file_cf {
+                (
+                    file_cfg
+                        .as_ref()
+                        .and_then(|c| c.cf_access_client_id.clone()),
+                    file_cfg
+                        .as_ref()
+                        .and_then(|c| c.cf_access_client_secret.clone()),
+                )
+            } else {
+                (None, None)
+            }
         };
         let (cf_access_client_id, cf_access_client_secret) =
             normalize_cf_service_token(raw_cf_id.as_deref(), raw_cf_secret.as_deref())?;
@@ -439,6 +465,25 @@ mod tests {
         let err = ClientConfig::load(Some(&path)).unwrap_err();
         assert!(err.contains("both be set or both be unset"), "got: {err}");
 
+        // Env overrides for URL + token still inherit CF creds from explicit config
+        let full_path = dir.path().join("full.json");
+        fs::write(
+            &full_path,
+            r#"{"appUrl":"https://app.example.com","token":"pat_old","cfAccessClientId":"id-1","cfAccessClientSecret":"sec-1"}"#,
+        )
+        .unwrap();
+        let inherited = ClientConfig::load_with_env(
+            Some(&full_path),
+            Some("https://app.example.com".to_string()),
+            Some("pat_new".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(inherited.token, "pat_new");
+        assert_eq!(inherited.cf_access_client_id.as_deref(), Some("id-1"));
+        assert_eq!(inherited.cf_access_client_secret.as_deref(), Some("sec-1"));
+
         let half_cfg = ClientConfig {
             app_url: "https://app.example.com".to_string(),
             token: "pat_x_y".to_string(),
@@ -549,6 +594,138 @@ mod tests {
         );
 
         origin_server.abort();
+        target_server.abort();
+    }
+
+    #[tokio::test]
+    async fn mint_token_via_login_sends_cf_headers_and_rejects_redirects() {
+        use axum::http::StatusCode;
+        use axum::response::Redirect;
+        use axum::routing::post;
+        use axum::{Json, Router};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let app = Router::new()
+            .route(
+                "/api/auth/login",
+                post(|headers: axum::http::HeaderMap| async move {
+                    assert_eq!(
+                        headers
+                            .get("cf-access-client-id")
+                            .and_then(|v| v.to_str().ok()),
+                        Some("login-id.access")
+                    );
+                    assert_eq!(
+                        headers
+                            .get("cf-access-client-secret")
+                            .and_then(|v| v.to_str().ok()),
+                        Some("login-secret")
+                    );
+                    StatusCode::OK
+                }),
+            )
+            .route(
+                "/api/tokens",
+                post(|headers: axum::http::HeaderMap| async move {
+                    assert_eq!(
+                        headers
+                            .get("cf-access-client-id")
+                            .and_then(|v| v.to_str().ok()),
+                        Some("login-id.access")
+                    );
+                    assert_eq!(
+                        headers
+                            .get("cf-access-client-secret")
+                            .and_then(|v| v.to_str().ok()),
+                        Some("login-secret")
+                    );
+                    (
+                        StatusCode::CREATED,
+                        Json(CreatedApiToken {
+                            id: Uuid::nil(),
+                            name: "mcp".to_string(),
+                            token: "pat_00000000-0000-0000-0000-000000000000_minted".to_string(),
+                            last4: "nted".to_string(),
+                            created_at: chrono::Utc::now(),
+                        }),
+                    )
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let created = mint_token_via_login(
+            &format!("http://{addr}"),
+            "robert@example.com",
+            "pass",
+            "mcp",
+            Some("login-id.access"),
+            Some("login-secret"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.last4, "nted");
+        server.abort();
+
+        let leaked = Arc::new(AtomicBool::new(false));
+        let leaked_target = leaked.clone();
+        let target_app = Router::new().route(
+            "/leaked",
+            post(move || async move {
+                leaked_target.store(true, Ordering::SeqCst);
+                StatusCode::OK
+            })
+            .get({
+                let leaked_get = leaked.clone();
+                move || async move {
+                    leaked_get.store(true, Ordering::SeqCst);
+                    StatusCode::OK
+                }
+            }),
+        );
+        let target_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target_listener.local_addr().unwrap();
+        let target_server = tokio::spawn(async move {
+            let _ = axum::serve(target_listener, target_app).await;
+        });
+
+        let redirect_url = format!("http://{target_addr}/leaked");
+        let redirect_login_url = redirect_url.clone();
+        let redirect_token_url = redirect_url.clone();
+        let redir_app = Router::new()
+            .route(
+                "/api/auth/login",
+                post(move || async move { Redirect::temporary(&redirect_login_url) }),
+            )
+            .route(
+                "/api/tokens",
+                post(move || async move { Redirect::temporary(&redirect_token_url) }),
+            );
+        let redir_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redir_addr = redir_listener.local_addr().unwrap();
+        let redir_server = tokio::spawn(async move {
+            let _ = axum::serve(redir_listener, redir_app).await;
+        });
+
+        let err = mint_token_via_login(
+            &format!("http://{redir_addr}"),
+            "robert@example.com",
+            "pass",
+            "mcp",
+            Some("login-id.access"),
+            Some("login-secret"),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("redirect"), "got: {err}");
+        assert!(!leaked.load(Ordering::SeqCst));
+
+        redir_server.abort();
         target_server.abort();
     }
 
