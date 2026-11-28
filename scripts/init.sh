@@ -37,7 +37,10 @@ echo "  App Name   : $OLD_NAME -> $NAME"
 echo "  Slug       : $OLD_SLUG -> $SLUG"
 echo "  Crate/DB   : $OLD_CRATE -> $CRATE_SLUG"
 
-mapfile -t FILES < <(git ls-files | grep -Ev '^(scripts/init\.sh|docs/tech-stack\.md)$')
+FILES=()
+while IFS= read -r file; do
+  FILES+=("$file")
+done < <(git ls-files | grep -Ev '^(scripts/init\.sh|docs/tech-stack\.md)$')
 
 OLD_REPO="$OLD_REPO" NEW_REPO="$NEW_REPO" \
 OLD_NAME="$OLD_NAME" NAME="$NAME" \

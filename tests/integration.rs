@@ -1059,6 +1059,8 @@ async fn binaries_spa_healthcheck_and_mcp_stdio_end_to_end() {
         "agent@example.com",
         "mcp-strong-passphrase",
         "stdio-test",
+        None,
+        None,
     )
     .await
     .expect("mint token via login");
@@ -1067,6 +1069,8 @@ async fn binaries_spa_healthcheck_and_mcp_stdio_end_to_end() {
     let cfg = ClientConfig {
         app_url: base_url.clone(),
         token: minted.token.clone(),
+        cf_access_client_id: None,
+        cf_access_client_secret: None,
     };
     cfg.write_atomic(&cfg_path)
         .expect("write atomic mcp config");

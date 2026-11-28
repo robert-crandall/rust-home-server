@@ -3,7 +3,9 @@ use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use app::apiclient::{APP_SLUG, ApiClient, ClientConfig, mint_token_via_login};
+use app::apiclient::{
+    APP_SLUG, ApiClient, ClientConfig, mint_token_via_login, normalize_cf_service_token,
+};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
@@ -91,7 +93,7 @@ fn print_usage() {
     eprintln!(
         "Usage:
   rust-home-server-mcp [serve] [--config <path>]
-  rust-home-server-mcp token [--url <app-url>] [--email <email>] [--name <token-name>] [--config <path>]"
+  rust-home-server-mcp token [--url <app-url>] [--email <email>] [--name <token-name>] [--pat | --token <pat>] [--cf-client-id <id>] [--cf-client-secret <secret>] [--config <path>]"
     );
 }
 
@@ -124,44 +126,53 @@ async fn run_serve(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn next_flag_value<'a>(
+    flag: &str,
+    iter: &mut std::slice::Iter<'a, String>,
+) -> Result<String, String> {
+    let val = iter
+        .next()
+        .ok_or_else(|| format!("{flag} requires a value"))?;
+    if val.trim().is_empty() || val.starts_with("--") {
+        return Err(format!("{flag} requires a value"));
+    }
+    Ok(val.clone())
+}
+
 async fn run_token(args: &[String]) -> Result<(), String> {
     let mut url: Option<String> = env::var("MCP_APP_URL")
         .ok()
         .filter(|v| !v.trim().is_empty());
     let mut email: Option<String> = env::var("MCP_EMAIL").ok().filter(|v| !v.trim().is_empty());
+    let mut existing_token: Option<String> = None;
+    let mut prompt_pat = false;
+    let mut cf_client_id: Option<String> = env::var("MCP_CF_ACCESS_CLIENT_ID")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let mut cf_client_secret: Option<String> = env::var("MCP_CF_ACCESS_CLIENT_SECRET")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
     let mut token_name = format!("{APP_SLUG}-mcp");
     let mut config_path: Option<PathBuf> = None;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--url" => {
-                url = Some(
-                    iter.next()
-                        .ok_or_else(|| "--url requires a value".to_string())?
-                        .clone(),
-                );
+            "--url" => url = Some(next_flag_value("--url", &mut iter)?),
+            "--email" => email = Some(next_flag_value("--email", &mut iter)?),
+            "--name" => token_name = next_flag_value("--name", &mut iter)?,
+            "--pat" => prompt_pat = true,
+            "--token" => existing_token = Some(next_flag_value("--token", &mut iter)?),
+            "--cf-client-id" => {
+                cf_client_id = Some(next_flag_value("--cf-client-id", &mut iter)?);
             }
-            "--email" => {
-                email = Some(
-                    iter.next()
-                        .ok_or_else(|| "--email requires a value".to_string())?
-                        .clone(),
-                );
-            }
-            "--name" => {
-                token_name = iter
-                    .next()
-                    .ok_or_else(|| "--name requires a value".to_string())?
-                    .clone();
+            "--cf-client-secret" => {
+                cf_client_secret = Some(next_flag_value("--cf-client-secret", &mut iter)?);
             }
             "--config" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| "--config requires a path".to_string())?;
-                config_path = Some(PathBuf::from(val));
+                config_path = Some(PathBuf::from(next_flag_value("--config", &mut iter)?));
             }
-            other => return Err(format!("unexpected argument '{other}'")),
+            _ => return Err("unexpected argument (run `help` for usage)".to_string()),
         }
     }
 
@@ -175,6 +186,54 @@ async fn run_token(args: &[String]) -> Result<(), String> {
             }
         })?,
     };
+
+    if cf_client_id.is_some() && cf_client_secret.is_none() && io::stdin().is_terminal() {
+        cf_client_secret = Some(
+            rpassword::prompt_password("CF-Access-Client-Secret: ")
+                .map_err(|err| format!("failed to read CF-Access-Client-Secret: {err}"))?,
+        );
+    }
+    let (cf_id, cf_secret) =
+        normalize_cf_service_token(cf_client_id.as_deref(), cf_client_secret.as_deref())?;
+
+    if prompt_pat && existing_token.is_none() {
+        if !io::stdin().is_terminal() {
+            return Err(
+                "--pat requires an interactive terminal (use --token in scripts)".to_string(),
+            );
+        }
+        let entered = rpassword::prompt_password("Personal access token (pat_...): ")
+            .map_err(|err| format!("failed to read personal access token: {err}"))?;
+        if entered.trim().is_empty() {
+            return Err("personal access token is required".to_string());
+        }
+        existing_token = Some(entered);
+    }
+
+    let dest = match config_path {
+        Some(p) => p,
+        None => ClientConfig::default_path()?,
+    };
+
+    let normalized_url = app_url.trim().trim_end_matches('/').to_string();
+
+    if let Some(pat) = existing_token {
+        let cfg = ClientConfig {
+            app_url: normalized_url,
+            token: pat.trim().to_string(),
+            cf_access_client_id: cf_id,
+            cf_access_client_secret: cf_secret,
+        };
+        let client = ApiClient::new(&cfg)?;
+        let user = client.me().await?;
+        cfg.write_atomic(&dest)?;
+        println!(
+            "verified token for {} and wrote {}",
+            user.email,
+            dest.display()
+        );
+        return Ok(());
+    }
 
     let user_email = match email {
         Some(v) => v,
@@ -198,15 +257,20 @@ async fn run_token(args: &[String]) -> Result<(), String> {
         }
     };
 
-    let dest = match config_path {
-        Some(p) => p,
-        None => ClientConfig::default_path()?,
-    };
-
-    let created = mint_token_via_login(&app_url, &user_email, &password, &token_name).await?;
+    let created = mint_token_via_login(
+        &normalized_url,
+        &user_email,
+        &password,
+        &token_name,
+        cf_id.as_deref(),
+        cf_secret.as_deref(),
+    )
+    .await?;
     let cfg = ClientConfig {
-        app_url: app_url.trim().trim_end_matches('/').to_string(),
+        app_url: normalized_url,
         token: created.token,
+        cf_access_client_id: cf_id,
+        cf_access_client_secret: cf_secret,
     };
     cfg.write_atomic(&dest)?;
 
