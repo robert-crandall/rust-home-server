@@ -6,10 +6,10 @@ help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-export ICON
+export MODULE NAME SLUG ICON
 
 init: ## Initialize template (MODULE=github.com/you/app NAME="My App" ICON=path/to/icon.png [SLUG=my-app])
-	@scripts/init.sh "$(MODULE)" "$(NAME)" "$(SLUG)" "$${ICON}"
+	@scripts/init.sh "$${MODULE}" "$${NAME}" "$${SLUG}" "$${ICON}"
 
 icons: ## Regenerate PWA icons from a square PNG >= 512x512 (ICON=path/to/icon.png)
 	@test -n "$${ICON}" || { echo "Usage: make icons ICON=path/to/icon.png" >&2; exit 1; }
