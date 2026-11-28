@@ -54,7 +54,7 @@ export function AuthScreen() {
         <div class="card-body gap-5">
           <header class="flex flex-col gap-2">
             <div class="inline-flex items-center gap-2.5 font-bold text-lg tracking-tight">
-              <img class="size-7 rounded-md shrink-0" src="/icon.svg" alt="" />
+              <img class="size-7 rounded-md shrink-0" src="/icon-192.png" alt="" />
               <span>Rust Home Server</span>
             </div>
             <h1 id="auth-heading" class="text-2xl font-bold leading-tight">

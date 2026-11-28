@@ -4,9 +4,15 @@ set -euo pipefail
 MODULE="${1:-}"
 NAME="${2:-}"
 SLUG="${3:-}"
+ICON="${4:-${ICON:-}}"
 
-if [[ -z "$MODULE" || -z "$NAME" ]]; then
-  echo "Usage: make init MODULE=github.com/you/my-app NAME=\"My App\" [SLUG=my-app]" >&2
+if [[ -z "$MODULE" || -z "$NAME" || -z "$ICON" ]]; then
+  echo "Usage: make init MODULE=github.com/you/my-app NAME=\"My App\" ICON=path/to/icon.png [SLUG=my-app]" >&2
+  exit 1
+fi
+
+if [[ "$NAME" == *\"* || "$NAME" == *\\* || "$NAME" == *$'\n'* || "$NAME" == *$'\r'* ]]; then
+  echo "Error: NAME must not contain quotes, backslashes, or newlines." >&2
   exit 1
 fi
 
@@ -36,11 +42,15 @@ echo "  Repository : $OLD_REPO -> $NEW_REPO"
 echo "  App Name   : $OLD_NAME -> $NAME"
 echo "  Slug       : $OLD_SLUG -> $SLUG"
 echo "  Crate/DB   : $OLD_CRATE -> $CRATE_SLUG"
+echo "  Icon       : $ICON"
+
+# Validate and render the new app icon before rewriting any tracked text files.
+python3 scripts/render-icons.py --reject-same-as web/public/icon-512.png "$ICON"
 
 FILES=()
 while IFS= read -r file; do
   FILES+=("$file")
-done < <(git ls-files | grep -Ev '^(scripts/init\.sh|docs/tech-stack\.md)$')
+done < <(git ls-files | grep -Ev '^(scripts/init\.sh|docs/tech-stack\.md|.*\.png)$')
 
 OLD_REPO="$OLD_REPO" NEW_REPO="$NEW_REPO" \
 OLD_NAME="$OLD_NAME" NAME="$NAME" \
@@ -53,7 +63,7 @@ perl -i -pe '
   s/\Q$ENV{OLD_CRATE}\E/$ENV{CRATE_SLUG}/g;
 ' "${FILES[@]}"
 
-LEFTOVERS="$(git grep -n -i -E "${OLD_REPO}|${OLD_NAME}|${OLD_SLUG}|${OLD_CRATE}" -- . ':(exclude)scripts/init.sh' ':(exclude)docs/tech-stack.md' || true)"
+LEFTOVERS="$(git grep -I -n -i -E "${OLD_REPO}|${OLD_NAME}|${OLD_SLUG}|${OLD_CRATE}" -- . ':(exclude)scripts/init.sh' ':(exclude)docs/tech-stack.md' ':(exclude)*.png' || true)"
 if [[ -n "$LEFTOVERS" ]]; then
   echo "Error: leftover template references found:" >&2
   echo "$LEFTOVERS" >&2

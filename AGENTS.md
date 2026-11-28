@@ -51,7 +51,8 @@ Read `web/node_modules/solid-js/CHEATSHEET.md` whenever touching `web/`. Solid 2
 
 ## Commands
 
-- `make init MODULE=github.com/you/app NAME="My App"` - rename all template references for a new project.
+- `make init MODULE=github.com/you/app NAME="My App" ICON=path/to/icon.png` - rename all template references and generate new PWA icons (`web/public/icon-192.png`, `web/public/icon-512.png`) from a square PNG (`>= 512x512`, distinct from the default template icon).
+- `make icons ICON=path/to/icon.png` - regenerate `web/public/icon-192.png` and `web/public/icon-512.png` from a square PNG (`>= 512x512`).
 - `make setup` - install frontend dependencies, copy `.env` if absent, and build `web/build` (if behind GitHub CFS, run `cd web && gh cfs -- bun install --frozen-lockfile`).
 - `make dev` - start the Rust API server on `:8080` and Vite HMR on `:5173`.
 - `make spec` - regenerate `docs/openapi.json` and `web/src/lib/api/schema.d.ts`.
