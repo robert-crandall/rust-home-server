@@ -264,7 +264,7 @@ describe("Rust Home Server SPA foundation", () => {
     });
   });
 
-  it("keeps API token details collapsed until opened, supports mint/revoke, theme switch, and sign-out", async () => {
+  it("opens AI & API access on the settings page from the user profile, supports mint/revoke, theme switch, and sign-out", async () => {
     currentUser = {
       id: "00000000-0000-0000-0000-000000000001",
       email: "leo@example.com",
@@ -282,8 +282,9 @@ describe("Rust Home Server SPA foundation", () => {
       );
     });
 
-    // Progressive disclosure: tokens are not fetched until the details panel opens.
+    // Tokens stay off the primary view and are not fetched until Settings opens.
     expect(tokenLoads).toBe(0);
+    expect(host.textContent).not.toContain("AI & API access");
 
     const themeSelect = host.querySelector(
       'select[aria-label="Color theme"]',
@@ -303,11 +304,17 @@ describe("Rust Home Server SPA foundation", () => {
     flush();
     expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
 
-    const details = host.querySelector("details") as HTMLDetailsElement;
-    details.open = true;
-    details.dispatchEvent(new Event("toggle"));
+    const profileBtn = host.querySelector(
+      'button[aria-label="Account settings for Leo"]',
+    ) as HTMLButtonElement;
+    profileBtn.click();
 
     await waitFor(() => {
+      const heading = host.querySelector("h1");
+      expect(heading?.textContent).toBe("Settings");
+      expect(document.activeElement).toBe(heading);
+      expect(host.textContent).toContain("leo@example.com");
+      expect(host.textContent).toContain("AI & API access");
       expect(tokenLoads).toBe(1);
     });
 
@@ -315,7 +322,7 @@ describe("Rust Home Server SPA foundation", () => {
       host.querySelector("#new-token-name") as HTMLInputElement,
       "rust-home-server-mcp",
     );
-    details
+    host
       .querySelector("form")!
       .dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
 
@@ -328,10 +335,90 @@ describe("Rust Home Server SPA foundation", () => {
       );
     });
 
-    const revokeBtn = Array.from(host.querySelectorAll("button")).find(
+    // Without navigator.clipboard (plain HTTP LAN), no dead Copy button renders.
+    expect(
+      Array.from(host.querySelectorAll("button")).find(
+        (btn) => btn.textContent === "Copy",
+      ),
+    ).toBeUndefined();
+
+    // Leaving and re-entering Settings restores focus and clears the shown-once secret.
+    const backBtn = Array.from(host.querySelectorAll("button")).find(
+      (btn) => btn.textContent === "Back",
+    );
+    backBtn!.click();
+    await waitFor(() => {
+      expect(host.querySelector("h1")?.textContent).toBe(
+        "Ready for Rust Home Server",
+      );
+      expect(document.activeElement).toBe(profileBtn);
+    });
+
+    // With clipboard support, Copy succeeds or surfaces manual-copy guidance on rejection.
+    const originalClipboard = navigator.clipboard;
+    const writeText = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("permission denied"))
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    try {
+      profileBtn.click();
+      await waitFor(() => {
+        expect(host.querySelector("h1")?.textContent).toBe("Settings");
+        expect(host.querySelector(".token-name")?.textContent).toBe(
+          "rust-home-server-mcp",
+        );
+      });
+      expect(host.textContent).not.toContain(
+        "pat_00000000-0000-0000-0000-000000000099_secret_a1b2",
+      );
+
+      setInputValue(
+        host.querySelector("#new-token-name") as HTMLInputElement,
+        "clipboard-check",
+      );
+      host
+        .querySelector("form")!
+        .dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+
+      await waitFor(() => {
+        expect(
+          Array.from(host.querySelectorAll("button")).find(
+            (btn) => btn.textContent === "Copy",
+          ),
+        ).toBeDefined();
+      });
+
+      const copyBtn = Array.from(host.querySelectorAll("button")).find(
+        (btn) => btn.textContent === "Copy",
+      )!;
+      copyBtn.click();
+      await waitFor(() => {
+        expect(host.textContent).toContain(
+          "Copy failed - select and copy the token manually.",
+        );
+      });
+
+      copyBtn.click();
+      await waitFor(() => {
+        expect(copyBtn.textContent).toBe("Copied");
+      });
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
+
+    const revokeBtns = Array.from(host.querySelectorAll("button")).filter(
       (btn) => btn.textContent === "Revoke",
     );
-    revokeBtn!.click();
+    for (const btn of revokeBtns) {
+      btn.click();
+    }
 
     await waitFor(() => {
       expect(host.querySelector(".token-name")).toBeNull();
@@ -392,9 +479,10 @@ describe("Rust Home Server SPA foundation", () => {
       );
     });
 
-    const details = host.querySelector("details") as HTMLDetailsElement;
-    details.open = true;
-    details.dispatchEvent(new Event("toggle"));
+    const profileBtn = host.querySelector(
+      'button[aria-label="Account settings for Leo"]',
+    ) as HTMLButtonElement;
+    profileBtn.click();
 
     await waitFor(() => {
       expect(host.textContent).toContain("database unavailable");
@@ -403,12 +491,13 @@ describe("Rust Home Server SPA foundation", () => {
       "No personal access tokens minted for this account yet.",
     );
 
-    // Recover from a committed mint whose response dropped: reopening refreshes tokens.
+    // Recover from a failed load and a committed mint whose response dropped via Refresh.
     failTokenLoad = false;
-    details.open = false;
-    details.dispatchEvent(new Event("toggle"));
-    details.open = true;
-    details.dispatchEvent(new Event("toggle"));
+    const refreshBtn = () =>
+      Array.from(host.querySelectorAll("button")).find(
+        (btn) => btn.textContent === "Refresh",
+      )!;
+    refreshBtn().click();
     await waitFor(() => {
       expect(host.textContent).toContain(
         "No personal access tokens minted for this account yet.",
@@ -420,17 +509,14 @@ describe("Rust Home Server SPA foundation", () => {
       host.querySelector("#new-token-name") as HTMLInputElement,
       "dropped-response-token",
     );
-    details
+    host
       .querySelector("form")!
       .dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
     await waitFor(() => {
-      expect(host.textContent).toContain("Reopen this panel to check existing tokens");
+      expect(host.textContent).toContain("Refresh tokens to check existing tokens");
     });
 
-    details.open = false;
-    details.dispatchEvent(new Event("toggle"));
-    details.open = true;
-    details.dispatchEvent(new Event("toggle"));
+    refreshBtn().click();
     await waitFor(() => {
       expect(host.querySelector(".token-name")?.textContent).toBe(
         "dropped-response-token",
@@ -444,9 +530,7 @@ describe("Rust Home Server SPA foundation", () => {
 
     await waitFor(() => {
       expect(host.textContent).toContain("session store unavailable");
-      expect(host.querySelector("h1")?.textContent).toBe(
-        "Ready for Rust Home Server",
-      );
+      expect(host.querySelector("h1")?.textContent).toBe("Settings");
     });
   });
 
@@ -478,19 +562,22 @@ describe("Rust Home Server SPA foundation", () => {
       expect(host.textContent).toContain("Signed in as Leo");
     });
 
-    const details = host.querySelector("details") as HTMLDetailsElement;
-    details.open = true;
-    details.dispatchEvent(new Event("toggle"));
+    const profileBtn = host.querySelector(
+      'button[aria-label="Account settings for Leo"]',
+    ) as HTMLButtonElement;
+    profileBtn.click();
     await waitFor(() => {
       expect(host.querySelector(".token-name")?.textContent).toBe("old-token");
     });
 
-    // Start a slow reopen refresh, then revoke before that stale GET resolves.
+    const refreshBtn = () =>
+      Array.from(host.querySelectorAll("button")).find(
+        (btn) => btn.textContent === "Refresh",
+      )!;
+
+    // Start a slow refresh, then revoke before that stale GET resolves.
     pendingTokenLoad = () => {};
-    details.open = false;
-    details.dispatchEvent(new Event("toggle"));
-    details.open = true;
-    details.dispatchEvent(new Event("toggle"));
+    refreshBtn().click();
 
     const resolveStaleGet = pendingTokenLoad!;
     pendingTokenLoad = null;
@@ -511,10 +598,7 @@ describe("Rust Home Server SPA foundation", () => {
     // Seed another old token, hold the post-mint GET open, and revoke the old
     // token before that GET settles; the newly minted token must stay visible.
     tokens = [initialToken];
-    details.open = false;
-    details.dispatchEvent(new Event("toggle"));
-    details.open = true;
-    details.dispatchEvent(new Event("toggle"));
+    refreshBtn().click();
     await waitFor(() => {
       expect(host.querySelector(".token-name")?.textContent).toBe("old-token");
     });
@@ -524,7 +608,7 @@ describe("Rust Home Server SPA foundation", () => {
       host.querySelector("#new-token-name") as HTMLInputElement,
       "fresh-token",
     );
-    details
+    host
       .querySelector("form")!
       .dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
 
