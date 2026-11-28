@@ -310,7 +310,9 @@ describe("Rust Home Server SPA foundation", () => {
     profileBtn.click();
 
     await waitFor(() => {
-      expect(host.querySelector("h1")?.textContent).toBe("Settings");
+      const heading = host.querySelector("h1");
+      expect(heading?.textContent).toBe("Settings");
+      expect(document.activeElement).toBe(heading);
       expect(host.textContent).toContain("leo@example.com");
       expect(host.textContent).toContain("AI & API access");
       expect(tokenLoads).toBe(1);

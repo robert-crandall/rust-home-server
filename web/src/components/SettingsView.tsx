@@ -21,6 +21,7 @@ export function SettingsView(props: {
   const [creating, setCreating] = createSignal(false);
   const canCopy = () =>
     typeof navigator !== "undefined" && Boolean(navigator.clipboard?.writeText);
+  let headingEl: HTMLHeadingElement | undefined;
   let tokenLoadSeq = 0;
   let mounted = true;
 
@@ -43,6 +44,7 @@ export function SettingsView(props: {
   }
 
   onSettled(() => {
+    headingEl?.focus();
     void loadTokens();
     return () => {
       mounted = false;
@@ -133,7 +135,13 @@ export function SettingsView(props: {
   return (
     <div class="flex flex-col gap-6">
       <div class="flex flex-wrap items-center justify-between gap-3">
-        <h1 class="text-2xl font-bold tracking-tight">Settings</h1>
+        <h1
+          ref={headingEl}
+          tabindex={-1}
+          class="text-2xl font-bold tracking-tight outline-none"
+        >
+          Settings
+        </h1>
         <button
           type="button"
           class="btn btn-outline btn-sm"
