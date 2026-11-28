@@ -9,6 +9,7 @@ export function AppShell(props: { user: User }) {
   const [view, setView] = createSignal<"home" | "settings">("home");
   const [logoutError, setLogoutError] = createSignal<string | null>(null);
   const [failedAvatarUrl, setFailedAvatarUrl] = createSignal<string | null>(null);
+  let profileBtn: HTMLButtonElement | undefined;
 
   async function handleLogout() {
     setLogoutError(null);
@@ -48,6 +49,7 @@ export function AppShell(props: { user: User }) {
 
           <div class="flex flex-wrap items-center gap-3">
             <button
+              ref={profileBtn}
               type="button"
               class={[
                 "user-profile-trigger inline-flex items-center gap-2 rounded-full border py-1 ps-1 pe-3 text-sm text-base-content cursor-pointer transition-colors",
@@ -132,7 +134,10 @@ export function AppShell(props: { user: User }) {
             initials={initials()}
             avatarUrl={avatarUrl()}
             onAvatarError={setFailedAvatarUrl}
-            onBack={() => setView("home")}
+            onBack={() => {
+              setView("home");
+              profileBtn?.focus();
+            }}
           />
         </Show>
       </main>

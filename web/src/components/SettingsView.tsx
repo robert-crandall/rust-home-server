@@ -13,9 +13,14 @@ export function SettingsView(props: {
   const [tokens, setTokens] = createSignal<ApiToken[]>([]);
   const [tokenName, setTokenName] = createSignal("");
   const [createdToken, setCreatedToken] = createSignal<CreatedApiToken | null>(null);
-  const [copiedTokenId, setCopiedTokenId] = createSignal<string | null>(null);
+  const [copyState, setCopyState] = createSignal<{
+    tokenId: string;
+    status: "copied" | "failed";
+  } | null>(null);
   const [tokenError, setTokenError] = createSignal<string | null>(null);
   const [creating, setCreating] = createSignal(false);
+  const canCopy = () =>
+    typeof navigator !== "undefined" && Boolean(navigator.clipboard?.writeText);
   let tokenLoadSeq = 0;
   let mounted = true;
 
@@ -52,7 +57,7 @@ export function SettingsView(props: {
 
     setCreating(true);
     setTokenError(null);
-    setCopiedTokenId(null);
+    setCopyState(null);
     try {
       const { data, error } = await api.POST("/api/tokens", {
         body: { name: trimmed },
@@ -103,7 +108,7 @@ export function SettingsView(props: {
       setTokens((prev) => prev.filter((item) => item.id !== id));
       if (createdToken()?.id === id) {
         setCreatedToken(null);
-        setCopiedTokenId(null);
+        setCopyState(null);
       }
     } catch {
       if (!mounted) return;
@@ -112,14 +117,16 @@ export function SettingsView(props: {
   }
 
   async function handleCopyToken(minted: CreatedApiToken) {
-    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
+    if (!canCopy()) return;
     try {
       await navigator.clipboard.writeText(minted.token);
       if (mounted) {
-        setCopiedTokenId(minted.id);
+        setCopyState({ tokenId: minted.id, status: "copied" });
       }
     } catch {
-      // Clipboard API may be unavailable on non-HTTPS LAN origins.
+      if (mounted) {
+        setCopyState({ tokenId: minted.id, status: "failed" });
+      }
     }
   }
 
@@ -221,14 +228,29 @@ export function SettingsView(props: {
                   <code class="flex-1 basis-64 rounded-field border border-base-300 bg-base-100 px-2.5 py-2 text-sm overflow-x-auto break-all">
                     {minted().token}
                   </code>
-                  <button
-                    type="button"
-                    class="btn btn-outline btn-sm"
-                    onClick={() => void handleCopyToken(minted())}
-                  >
-                    {copiedTokenId() === minted().id ? "Copied" : "Copy"}
-                  </button>
+                  <Show when={canCopy()}>
+                    <button
+                      type="button"
+                      class="btn btn-outline btn-sm"
+                      onClick={() => void handleCopyToken(minted())}
+                    >
+                      {copyState()?.tokenId === minted().id &&
+                      copyState()?.status === "copied"
+                        ? "Copied"
+                        : "Copy"}
+                    </button>
+                  </Show>
                 </div>
+                <Show
+                  when={
+                    copyState()?.tokenId === minted().id &&
+                    copyState()?.status === "failed"
+                  }
+                >
+                  <p class="text-xs text-error" role="alert">
+                    Copy failed - select and copy the token manually.
+                  </p>
+                </Show>
                 <p class="text-sm text-muted">
                   Token{" "}
                   <strong class="text-base-content">{minted().name}</strong>{" "}

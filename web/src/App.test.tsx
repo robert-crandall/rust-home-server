@@ -333,7 +333,14 @@ describe("Rust Home Server SPA foundation", () => {
       );
     });
 
-    // Leaving and re-entering Settings clears the shown-once token secret.
+    // Without navigator.clipboard (plain HTTP LAN), no dead Copy button renders.
+    expect(
+      Array.from(host.querySelectorAll("button")).find(
+        (btn) => btn.textContent === "Copy",
+      ),
+    ).toBeUndefined();
+
+    // Leaving and re-entering Settings restores focus and clears the shown-once secret.
     const backBtn = Array.from(host.querySelectorAll("button")).find(
       (btn) => btn.textContent === "Back",
     );
@@ -342,23 +349,74 @@ describe("Rust Home Server SPA foundation", () => {
       expect(host.querySelector("h1")?.textContent).toBe(
         "Ready for Rust Home Server",
       );
+      expect(document.activeElement).toBe(profileBtn);
     });
 
-    profileBtn.click();
-    await waitFor(() => {
-      expect(host.querySelector("h1")?.textContent).toBe("Settings");
-      expect(host.querySelector(".token-name")?.textContent).toBe(
-        "rust-home-server-mcp",
+    // With clipboard support, Copy succeeds or surfaces manual-copy guidance on rejection.
+    const originalClipboard = navigator.clipboard;
+    const writeText = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("permission denied"))
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    try {
+      profileBtn.click();
+      await waitFor(() => {
+        expect(host.querySelector("h1")?.textContent).toBe("Settings");
+        expect(host.querySelector(".token-name")?.textContent).toBe(
+          "rust-home-server-mcp",
+        );
+      });
+      expect(host.textContent).not.toContain(
+        "pat_00000000-0000-0000-0000-000000000099_secret_a1b2",
       );
-    });
-    expect(host.textContent).not.toContain(
-      "pat_00000000-0000-0000-0000-000000000099_secret_a1b2",
-    );
 
-    const revokeBtn = Array.from(host.querySelectorAll("button")).find(
+      setInputValue(
+        host.querySelector("#new-token-name") as HTMLInputElement,
+        "clipboard-check",
+      );
+      host
+        .querySelector("form")!
+        .dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+
+      await waitFor(() => {
+        expect(
+          Array.from(host.querySelectorAll("button")).find(
+            (btn) => btn.textContent === "Copy",
+          ),
+        ).toBeDefined();
+      });
+
+      const copyBtn = Array.from(host.querySelectorAll("button")).find(
+        (btn) => btn.textContent === "Copy",
+      )!;
+      copyBtn.click();
+      await waitFor(() => {
+        expect(host.textContent).toContain(
+          "Copy failed - select and copy the token manually.",
+        );
+      });
+
+      copyBtn.click();
+      await waitFor(() => {
+        expect(copyBtn.textContent).toBe("Copied");
+      });
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
+
+    const revokeBtns = Array.from(host.querySelectorAll("button")).filter(
       (btn) => btn.textContent === "Revoke",
     );
-    revokeBtn!.click();
+    for (const btn of revokeBtns) {
+      btn.click();
+    }
 
     await waitFor(() => {
       expect(host.querySelector(".token-name")).toBeNull();
