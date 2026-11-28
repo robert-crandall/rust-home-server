@@ -757,6 +757,7 @@ fn init_script_requires_new_icon_without_modifying_tree() {
     for (label, args, want_stderr) in cases {
         let output = std::process::Command::new("bash")
             .args(&args)
+            .env_remove("ICON")
             .current_dir(dir.path())
             .output()
             .expect("run scripts/init.sh");
