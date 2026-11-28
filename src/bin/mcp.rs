@@ -93,7 +93,7 @@ fn print_usage() {
     eprintln!(
         "Usage:
   rust-home-server-mcp [serve] [--config <path>]
-  rust-home-server-mcp token [--url <app-url>] [--email <email>] [--name <token-name>] [--token <pat>] [--cf-client-id <id>] [--cf-client-secret <secret>] [--config <path>]"
+  rust-home-server-mcp token [--url <app-url>] [--email <email>] [--name <token-name>] [--pat | --token <pat>] [--cf-client-id <id>] [--cf-client-secret <secret>] [--config <path>]"
     );
 }
 
@@ -126,14 +126,26 @@ async fn run_serve(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn next_flag_value<'a>(
+    flag: &str,
+    iter: &mut std::slice::Iter<'a, String>,
+) -> Result<String, String> {
+    let val = iter
+        .next()
+        .ok_or_else(|| format!("{flag} requires a value"))?;
+    if val.trim().is_empty() || val.starts_with("--") {
+        return Err(format!("{flag} requires a value"));
+    }
+    Ok(val.clone())
+}
+
 async fn run_token(args: &[String]) -> Result<(), String> {
     let mut url: Option<String> = env::var("MCP_APP_URL")
         .ok()
         .filter(|v| !v.trim().is_empty());
     let mut email: Option<String> = env::var("MCP_EMAIL").ok().filter(|v| !v.trim().is_empty());
-    let mut existing_token: Option<String> = env::var("MCP_APP_TOKEN")
-        .ok()
-        .filter(|v| !v.trim().is_empty());
+    let mut existing_token: Option<String> = None;
+    let mut prompt_pat = false;
     let mut cf_client_id: Option<String> = env::var("MCP_CF_ACCESS_CLIENT_ID")
         .ok()
         .filter(|v| !v.trim().is_empty());
@@ -146,54 +158,21 @@ async fn run_token(args: &[String]) -> Result<(), String> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--url" => {
-                url = Some(
-                    iter.next()
-                        .ok_or_else(|| "--url requires a value".to_string())?
-                        .clone(),
-                );
-            }
-            "--email" => {
-                email = Some(
-                    iter.next()
-                        .ok_or_else(|| "--email requires a value".to_string())?
-                        .clone(),
-                );
-            }
-            "--name" => {
-                token_name = iter
-                    .next()
-                    .ok_or_else(|| "--name requires a value".to_string())?
-                    .clone();
-            }
-            "--token" => {
-                existing_token = Some(
-                    iter.next()
-                        .ok_or_else(|| "--token requires a value".to_string())?
-                        .clone(),
-                );
-            }
+            "--url" => url = Some(next_flag_value("--url", &mut iter)?),
+            "--email" => email = Some(next_flag_value("--email", &mut iter)?),
+            "--name" => token_name = next_flag_value("--name", &mut iter)?,
+            "--pat" => prompt_pat = true,
+            "--token" => existing_token = Some(next_flag_value("--token", &mut iter)?),
             "--cf-client-id" => {
-                cf_client_id = Some(
-                    iter.next()
-                        .ok_or_else(|| "--cf-client-id requires a value".to_string())?
-                        .clone(),
-                );
+                cf_client_id = Some(next_flag_value("--cf-client-id", &mut iter)?);
             }
             "--cf-client-secret" => {
-                cf_client_secret = Some(
-                    iter.next()
-                        .ok_or_else(|| "--cf-client-secret requires a value".to_string())?
-                        .clone(),
-                );
+                cf_client_secret = Some(next_flag_value("--cf-client-secret", &mut iter)?);
             }
             "--config" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| "--config requires a path".to_string())?;
-                config_path = Some(PathBuf::from(val));
+                config_path = Some(PathBuf::from(next_flag_value("--config", &mut iter)?));
             }
-            other => return Err(format!("unexpected argument '{other}'")),
+            _ => return Err("unexpected argument (run `help` for usage)".to_string()),
         }
     }
 
@@ -216,6 +195,20 @@ async fn run_token(args: &[String]) -> Result<(), String> {
     }
     let (cf_id, cf_secret) =
         normalize_cf_service_token(cf_client_id.as_deref(), cf_client_secret.as_deref())?;
+
+    if prompt_pat && existing_token.is_none() {
+        if !io::stdin().is_terminal() {
+            return Err(
+                "--pat requires an interactive terminal (use --token in scripts)".to_string(),
+            );
+        }
+        let entered = rpassword::prompt_password("Personal access token (pat_...): ")
+            .map_err(|err| format!("failed to read personal access token: {err}"))?;
+        if entered.trim().is_empty() {
+            return Err("personal access token is required".to_string());
+        }
+        existing_token = Some(entered);
+    }
 
     let dest = match config_path {
         Some(p) => p,

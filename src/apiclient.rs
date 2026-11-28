@@ -45,7 +45,7 @@ impl ClientConfig {
         let env_cf_id = env_non_empty("MCP_CF_ACCESS_CLIENT_ID");
         let env_cf_secret = env_non_empty("MCP_CF_ACCESS_CLIENT_SECRET");
 
-        let file_cfg = if env_url.is_some() && env_token.is_some() {
+        let file_cfg = if config_path.is_none() && env_url.is_some() && env_token.is_some() {
             None
         } else {
             let path = match config_path {
@@ -272,6 +272,7 @@ impl ApiClient {
 
         let http = reqwest::Client::builder()
             .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(15))
             .build()
             .map_err(|err| format!("failed to build HTTP client: {err}"))?;
@@ -316,6 +317,7 @@ pub async fn mint_token_via_login(
 
     let client = reqwest::Client::builder()
         .default_headers(headers)
+        .redirect(reqwest::redirect::Policy::none())
         .cookie_store(true)
         .timeout(Duration::from_secs(15))
         .build()
@@ -356,6 +358,12 @@ pub async fn mint_token_via_login(
 
 async fn read_api_error(resp: reqwest::Response) -> String {
     let status = resp.status();
+    if status.is_redirection() {
+        return format!(
+            "HTTP {} redirect (if behind Cloudflare Access, verify your Service Auth policy and cfAccessClientId/cfAccessClientSecret)",
+            status.as_u16()
+        );
+    }
     if let Ok(err_body) = resp.json::<ErrorBody>().await {
         return format!("HTTP {}: {}", status.as_u16(), err_body.error);
     }
@@ -490,6 +498,58 @@ mod tests {
         let me = client.me().await.unwrap();
         assert_eq!(me.email, "robert@example.com");
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn api_client_does_not_follow_redirects_with_cf_secret() {
+        use axum::Router;
+        use axum::http::StatusCode;
+        use axum::response::Redirect;
+        use axum::routing::get;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let leaked = Arc::new(AtomicBool::new(false));
+        let leaked_target = leaked.clone();
+        let target_app = Router::new().route(
+            "/leaked",
+            get(move || async move {
+                leaked_target.store(true, Ordering::SeqCst);
+                StatusCode::OK
+            }),
+        );
+        let target_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target_listener.local_addr().unwrap();
+        let target_server = tokio::spawn(async move {
+            let _ = axum::serve(target_listener, target_app).await;
+        });
+
+        let redirect_url = format!("http://{target_addr}/leaked");
+        let origin_app = Router::new().route(
+            "/api/auth/me",
+            get(move || async move { Redirect::temporary(&redirect_url) }),
+        );
+        let origin_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin_addr = origin_listener.local_addr().unwrap();
+        let origin_server = tokio::spawn(async move {
+            let _ = axum::serve(origin_listener, origin_app).await;
+        });
+
+        let cfg = ClientConfig {
+            app_url: format!("http://{origin_addr}"),
+            token: "pat_00000000-0000-0000-0000-000000000000_secret".to_string(),
+            cf_access_client_id: Some("svc-id.access".to_string()),
+            cf_access_client_secret: Some("svc-secret".to_string()),
+        };
+        let err = ApiClient::new(&cfg).unwrap().me().await.unwrap_err();
+        assert!(err.contains("redirect"), "got: {err}");
+        assert!(
+            !leaked.load(Ordering::SeqCst),
+            "redirect target must not be called"
+        );
+
+        origin_server.abort();
+        target_server.abort();
     }
 
     #[test]
